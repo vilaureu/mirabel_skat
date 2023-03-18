@@ -3,6 +3,8 @@
 //! [_surena_](https://github.com/RememberOfLife/surena) game engine and the
 //! [_mirabel_](https://github.com/RememberOfLife/mirabel) game GUI.
 
+mod structures;
+
 use mirabel::{
     error::{Error, ErrorCode, Result},
     game::{
@@ -11,118 +13,13 @@ use mirabel::{
     game_init::GameInit,
     MoveDataSync,
 };
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Player {
-    Forehand,
-    Middlehand,
-    Rearhand,
-}
-
-impl Player {
-    fn count() -> u8 {
-        todo!()
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum CardLocation {
-    NotInGame,
-    Player(Player),
-    Skat,
-    Unknown,
-}
-
-impl Default for CardLocation {
-    fn default() -> Self {
-        Self::NotInGame
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Suit {
-    Clubs,
-    Spades,
-    Hearts,
-    Diamonds,
-}
-
-impl Suit {
-    const fn count() -> usize {
-        // FIXME: Replace with std::mem::variant_count when stabilized.
-        4
-    }
-
-    const fn all() -> [Self; Self::count()] {
-        [Self::Clubs, Self::Spades, Self::Hearts, Self::Diamonds]
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum CardValue {
-    Num7,
-    Num8,
-    Num9,
-    Jack,
-    Queen,
-    King,
-    Num10,
-    Ace,
-}
-
-impl CardValue {
-    const fn count() -> usize {
-        8
-    }
-
-    const fn all() -> [Self; Self::count()] {
-        [
-            Self::Num7,
-            Self::Num8,
-            Self::Num9,
-            Self::Jack,
-            Self::Queen,
-            Self::King,
-            Self::Num10,
-            Self::Ace,
-        ]
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct Card(Suit, CardValue);
-
-impl Card {
-    const fn count() -> usize {
-        Suit::count() * CardValue::count()
-    }
-
-    const fn all() -> [Self; Self::count()] {
-        let mut cards = [Self(Suit::Clubs, CardValue::Num7); Self::count()];
-        let mut suit = 0;
-        while suit < Suit::count() {
-            let mut value = 0;
-            while value < CardValue::count() {
-                let card = Self(Suit::all()[suit], CardValue::all()[value]);
-                cards[card.index()] = card;
-                value += 1;
-            }
-            suit += 1;
-        }
-        cards
-    }
-
-    /// Returns the index of `self` into [`Self::all()`].
-    const fn index(&self) -> usize {
-        self.0 as usize * CardValue::count() + self.1 as usize
-    }
-}
+use structures::{Card, CardStruct, Player};
 
 #[derive(Clone, Copy, Debug)]
 enum GameState {
     Dealing {
         /// # Invariants
-        /// This must be a in the range from `0` to excluding [`Card::count()`].
+        /// This must be a in the range from `0` to excluding [`Card::COUNT`].
         dealt: u8,
     },
     Bidding,
@@ -136,9 +33,9 @@ impl Default for GameState {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Skat {
-    cards: [CardLocation; Card::count()],
+    cards: CardStruct,
     /// # Invariants
     /// This must be a valid player.
     dealer: player_id,
@@ -155,8 +52,10 @@ impl Eq for Skat {}
 
 impl Default for Skat {
     fn default() -> Self {
-        assert_eq!(0, PLAYER_NONE);
-        assert!(PLAYER_RAND > 3);
+        #[allow(clippy::assertions_on_constants)]
+        const _: () = assert!(0 == PLAYER_NONE);
+        #[allow(clippy::assertions_on_constants)]
+        const _: () = assert!(PLAYER_RAND > 3);
         Self {
             cards: Default::default(),
             dealer: 1,
@@ -181,12 +80,13 @@ impl GameMethods for Skat {
     }
 
     fn copy_from(&mut self, other: &mut Self) -> Result<()> {
-        *self = *other;
+        // FIXME: Reuse allocation or avoid dynamic allocations.
+        *self = other.clone();
         Ok(())
     }
 
     fn player_count(&mut self) -> Result<u8> {
-        Ok(Player::count())
+        Ok(Player::COUNT.try_into().unwrap())
     }
 
     fn import_state(&mut self, string: Option<&str>) -> Result<()> {
@@ -213,12 +113,9 @@ impl GameMethods for Skat {
 
     fn get_concrete_moves(&mut self, player: player_id, moves: &mut Vec<Self::Move>) -> Result<()> {
         match self.state {
-            GameState::Dealing { dealt } => {
-                for (index, &location) in self.cards.iter().enumerate() {
-                    assert_eq!(PLAYER_RAND, player);
-                    if location == CardLocation::NotInGame {
-                        moves.push(CardAction::new(index).into());
-                    }
+            GameState::Dealing { dealt: _ } => {
+                for card in self.cards.iter_unknown() {
+                    moves.push(CardAction::Card(card).into())
                 }
             }
             GameState::Bidding => todo!(),
@@ -250,25 +147,20 @@ impl GameMethods for Skat {
         match &mut self.state {
             GameState::Dealing { dealt } => {
                 assert_eq!(PLAYER_RAND, player);
-                let card: CardAction = mov.md.try_into()?;
-                match card {
-                    CardAction::Hidden => {
-                        // Because any card currently not in the game could have
-                        // been dealt, all these card locations become unknown.
-                        for location in self
-                            .cards
-                            .iter_mut()
-                            .filter(|&&mut c| c == CardLocation::NotInGame)
-                        {
-                            *location = CardLocation::Unknown
+                let card = mov.md.try_into()?;
+                let target = deal_to(*dealt);
+                self.cards.give(
+                    target,
+                    match card {
+                        CardAction::Hidden => {
+                            // Add an unknown card (None) to the player.
+                            None
                         }
-                    }
-                    CardAction::Card(card) => {
-                        self.cards[card.index()] = deal_to(*dealt);
-                    }
-                }
+                        CardAction::Card(card) => Some(card),
+                    },
+                );
                 *dealt += 1;
-                if usize::from(*dealt) >= Card::count() {
+                if usize::from(*dealt) >= Card::COUNT {
                     self.state = GameState::Bidding;
                 }
             }
@@ -290,14 +182,22 @@ impl GameMethods for Skat {
         mov: MoveDataSync<<Self::Move as MoveData>::Rust<'_>>,
     ) -> Result<()> {
         match &mut self.state {
-            GameState::Dealing { dealt } => {
+            GameState::Dealing { dealt: _ } => {
                 if player != PLAYER_RAND {
                     return Err(Error::new_static(
                         ErrorCode::InvalidPlayer,
                         "only PLAYER_RAND can deal cards\0",
                     ));
                 }
-                todo!()
+                let card = mov.md.try_into()?;
+                if let CardAction::Card(card) = card {
+                    if self.cards.iter().any(|c| c == card) {
+                        return Err(Error::new_static(
+                            ErrorCode::InvalidMove,
+                            "this card has already been dealt\0",
+                        ));
+                    }
+                }
             }
             GameState::Bidding => todo!(),
             GameState::Declaring => todo!(),
@@ -313,9 +213,9 @@ impl GameMethods for Skat {
 /// # Encoding
 /// [`Self`] is encoded as a [`move_code`] in the following way:
 /// ```text
-/// HSB 1X0...0XXXXX LSB
-///      ║    ╚╩╩╩╩ Card index if not an action
-///      ╚ 1 if action
+/// HSB X0...0XXXXX LSB
+///     ║     ╚╩╩╩╩ Card index if not an action
+///     ╚ 1 if action
 /// ```
 #[derive(Clone, Copy, Debug)]
 enum CardAction {
@@ -324,27 +224,18 @@ enum CardAction {
 }
 
 impl CardAction {
-    const MASK: move_code = (0b1 as move_code).reverse_bits();
-    const HIDDEN: move_code = (0b11 as move_code).reverse_bits();
-
-    /// # Panics
-    /// Panics if `index` is out of range.
-    fn new(index: usize) -> Self {
-        Self::Card(Card::all()[index])
-    }
+    const HIDDEN: move_code = (0b1 as move_code).reverse_bits();
 }
 
 impl From<CardAction> for move_code {
     fn from(value: CardAction) -> Self {
-        assert_eq!(0, MOVE_NONE);
-        // The highest two bits in a move_code must never be set for a card.
-        assert_eq!(
-            0,
-            move_code::try_from(Card::count() - 1).unwrap() & CardAction::HIDDEN
-        );
+        #[allow(clippy::assertions_on_constants)]
+        const _: () = assert!(move_code::MAX == MOVE_NONE);
+        // The highest bit in a move_code must never be set for a card.
+        assert!(move_code::try_from(Card::COUNT - 1).unwrap() < CardAction::HIDDEN);
         match value {
             CardAction::Hidden => CardAction::HIDDEN,
-            CardAction::Card(card) => CardAction::MASK | card.index() as move_code,
+            CardAction::Card(card) => card.index() as move_code,
         }
     }
 }
@@ -359,16 +250,9 @@ impl TryFrom<move_code> for CardAction {
     type Error = Error;
 
     fn try_from(value: move_code) -> std::result::Result<Self, Self::Error> {
-        if value & (0b1 as move_code).reverse_bits() == 0 {
-            return Err(Error::new_static(
-                ErrorCode::InvalidMove,
-                "card actions must have MSB set\0",
-            ));
-        }
         Ok(if value == Self::HIDDEN {
             Self::Hidden
         } else {
-            let value = value & !Self::MASK;
             Self::Card(
                 usize::try_from(value)
                     .ok()
@@ -381,20 +265,19 @@ impl TryFrom<move_code> for CardAction {
     }
 }
 
-/// Returns the [`CardLocation`] to which should be dealt next.
+/// Returns the player to which should be dealt next.
 ///
 /// `dealt` is the number of already dealt cards.
-/// The returned location is either [`CardLocation::Player`] or
-/// [`CardLocation::Skat`].
+/// The returned value is either a [`Player`] or [`None`] for the Skat.
 ///
 /// # Panics
 /// Panics if `dealt` is out of range.
-fn deal_to(dealt: u8) -> CardLocation {
+fn deal_to(dealt: u8) -> Option<Player> {
     match dealt {
-        0..=2 | 11..=14 | 23..=25 => CardLocation::Player(Player::Forehand),
-        3..=5 | 15..=18 | 26..=28 => CardLocation::Player(Player::Middlehand),
-        6..=8 | 19..=22 | 29..=31 => CardLocation::Player(Player::Rearhand),
-        9..=10 => CardLocation::Skat,
+        0..=2 | 11..=14 | 23..=25 => Some(Player::Forehand),
+        3..=5 | 15..=18 | 26..=28 => Some(Player::Middlehand),
+        6..=8 | 19..=22 | 29..=31 => Some(Player::Rearhand),
+        9..=10 => None,
         32.. => panic!("dealt too many cards"),
     }
 }
