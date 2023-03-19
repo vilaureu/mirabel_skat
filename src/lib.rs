@@ -137,6 +137,10 @@ impl GameMethods for Skat {
         Ok(())
     }
 
+    /// Convert a move string to a [`MoveCode`].
+    ///
+    /// Examples for dealing cards: `10S` for _10 of spades_ or `?` for a hidden
+    /// action.
     fn get_move_data(&mut self, _player: player_id, string: &str) -> Result<Self::Move> {
         Ok(match self.state {
             GameState::Dealing { dealt: _ } => {
