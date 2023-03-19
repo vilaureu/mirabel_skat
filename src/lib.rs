@@ -21,18 +21,14 @@ use nom::{
     character::complete::space0,
     combinator::eof,
     error::convert_error,
-    sequence::{delimited, terminated, tuple},
+    sequence::{delimited, terminated},
     Finish,
 };
 use structures::{Card, CardStruct, Player};
 
 #[derive(Clone, Copy, Debug)]
 enum GameState {
-    Dealing {
-        /// # Invariants
-        /// This must be a in the range from `0` to excluding [`Card::COUNT`].
-        dealt: u8,
-    },
+    Dealing,
     Bidding,
     Declaring,
     Playing,
@@ -40,7 +36,7 @@ enum GameState {
 
 impl Default for GameState {
     fn default() -> Self {
-        Self::Dealing { dealt: 0 }
+        Self::Dealing
     }
 }
 
@@ -114,7 +110,7 @@ impl GameMethods for Skat {
 
     fn players_to_move(&mut self, players: &mut Vec<player_id>) -> Result<()> {
         players.push(match self.state {
-            GameState::Dealing { dealt: _ } => PLAYER_RAND,
+            GameState::Dealing => PLAYER_RAND,
             GameState::Bidding => todo!(),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
@@ -124,7 +120,7 @@ impl GameMethods for Skat {
 
     fn get_concrete_moves(&mut self, player: player_id, moves: &mut Vec<Self::Move>) -> Result<()> {
         match self.state {
-            GameState::Dealing { dealt: _ } => {
+            GameState::Dealing => {
                 for card in self.cards.iter_unknown() {
                     moves.push(CardAction::Card(card).into())
                 }
@@ -143,7 +139,7 @@ impl GameMethods for Skat {
     /// action.
     fn get_move_data(&mut self, _player: player_id, string: &str) -> Result<Self::Move> {
         Ok(match self.state {
-            GameState::Dealing { dealt: _ } => {
+            GameState::Dealing => {
                 let card: CardAction = string.parse()?;
                 card.into()
             }
@@ -168,10 +164,11 @@ impl GameMethods for Skat {
         mov: MoveDataSync<<Self::Move as MoveData>::Rust<'_>>,
     ) -> Result<()> {
         match &mut self.state {
-            GameState::Dealing { dealt } => {
+            GameState::Dealing => {
                 assert_eq!(PLAYER_RAND, player);
                 let card = mov.md.try_into()?;
-                let target = deal_to(*dealt);
+                let dealt = self.cards.count();
+                let target = deal_to(dealt);
                 self.cards.give(
                     target,
                     match card {
@@ -182,8 +179,7 @@ impl GameMethods for Skat {
                         CardAction::Card(card) => Some(card),
                     },
                 );
-                *dealt += 1;
-                if usize::from(*dealt) >= Card::COUNT {
+                if usize::from(dealt) + 1 >= Card::COUNT {
                     self.state = GameState::Bidding;
                 }
             }
@@ -205,7 +201,7 @@ impl GameMethods for Skat {
         mov: MoveDataSync<<Self::Move as MoveData>::Rust<'_>>,
     ) -> Result<()> {
         match &mut self.state {
-            GameState::Dealing { dealt: _ } => {
+            GameState::Dealing => {
                 if player != PLAYER_RAND {
                     return Err(Error::new_static(
                         ErrorCode::InvalidPlayer,

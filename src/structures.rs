@@ -2,9 +2,9 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case},
     character::complete::{char, space0},
-    combinator::{map, value, cut},
+    combinator::{cut, map, value},
     error::{context, VerboseError},
-    sequence::{separated_pair, tuple},
+    sequence::separated_pair,
 };
 
 type IResult<I, O> = nom::IResult<I, O, VerboseError<I>>;
@@ -153,13 +153,23 @@ pub(crate) type CardVec = Vec<Option<Card>>;
 // FIXME: Replace vectors with some array vectors.
 #[derive(Default, Clone, Debug)]
 pub(crate) struct CardStruct {
+    /// # Invariants
+    /// At most [`Self::HAND_SIZE`] cards per hand.
     pub(crate) hands: [CardVec; Player::COUNT],
+    /// # Invariants
+    /// At most [`Self::SKAT_SIZE`] cards per hand.
     pub(crate) skat: CardVec,
+    /// # Invariants
+    /// At most [`Self::TRICK_SIZE`]`-1` cards per hand.
     pub(crate) trick: Vec<Card>,
-    pub(crate) last_trick: Option<[Card; 3]>,
+    pub(crate) last_trick: Option<[Card; Self::TRICK_SIZE]>,
 }
 
 impl CardStruct {
+    const HAND_SIZE: usize = 10;
+    const SKAT_SIZE: usize = 2;
+    const TRICK_SIZE: usize = 3;
+
     pub(crate) fn iter(&self) -> impl Iterator<Item = Card> + '_ {
         self.hands
             .iter()
@@ -191,5 +201,16 @@ impl CardStruct {
             Some(player) => self.hands[player as usize].push(card),
             None => self.skat.push(card),
         }
+    }
+
+    /// Count the number of managed cards.
+    ///
+    /// This is useful in the dealing phase to find the number of dealt cards.
+    pub(crate) fn count(&self) -> u8 {
+        let count: usize = self.hands.iter().map(Vec::len).sum::<usize>()
+            + self.skat.len()
+            + self.trick.len()
+            + self.last_trick.map(|t| t.len()).unwrap_or_default();
+        count.try_into().unwrap()
     }
 }
