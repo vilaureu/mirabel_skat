@@ -5,13 +5,24 @@
 
 mod structures;
 
+use std::str::FromStr;
+
 use mirabel::{
+    cstr,
     error::{Error, ErrorCode, Result},
     game::{
-        move_code, player_id, GameMethods, MoveCode, MoveData, MOVE_NONE, PLAYER_NONE, PLAYER_RAND,
+        move_code, player_id, semver, GameMethods, Metadata, MoveCode, MoveData, MOVE_NONE,
+        PLAYER_NONE, PLAYER_RAND,
     },
     game_init::GameInit,
-    MoveDataSync,
+    plugin_get_game_methods, MoveDataSync,
+};
+use nom::{
+    character::complete::space0,
+    combinator::eof,
+    error::convert_error,
+    sequence::{delimited, terminated, tuple},
+    Finish,
 };
 use structures::{Card, CardStruct, Player};
 
@@ -126,8 +137,16 @@ impl GameMethods for Skat {
         Ok(())
     }
 
-    fn get_move_data(&mut self, player: player_id, string: &str) -> Result<Self::Move> {
-        todo!()
+    fn get_move_data(&mut self, _player: player_id, string: &str) -> Result<Self::Move> {
+        Ok(match self.state {
+            GameState::Dealing { dealt: _ } => {
+                let card: CardAction = string.parse()?;
+                card.into()
+            }
+            GameState::Bidding => todo!(),
+            GameState::Declaring => todo!(),
+            GameState::Playing => todo!(),
+        })
     }
 
     fn get_move_str(
@@ -265,6 +284,26 @@ impl TryFrom<move_code> for CardAction {
     }
 }
 
+impl FromStr for CardAction {
+    type Err = Error;
+
+    /// Parses into a card action like [`Card::parse_optional()`].
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let (_, card) = terminated(delimited(space0, Card::parse_optional, space0), eof)(s)
+            .finish()
+            .map_err(|e| {
+                Error::new_dynamic(
+                    ErrorCode::InvalidInput,
+                    format!("failed to parse card action:\n{}", convert_error(s, e)),
+                )
+            })?;
+        Ok(match card {
+            Some(c) => Self::Card(c),
+            None => Self::Hidden,
+        })
+    }
+}
+
 /// Returns the player to which should be dealt next.
 ///
 /// `dealt` is the number of already dealt cards.
@@ -281,3 +320,19 @@ fn deal_to(dealt: u8) -> Option<Player> {
         32.. => panic!("dealt too many cards"),
     }
 }
+
+fn generate_metadata() -> Metadata {
+    Metadata {
+        game_name: cstr("Skat\0"),
+        variant_name: cstr("Standard\0"),
+        impl_name: cstr("vilaureu\0"),
+        version: semver {
+            major: 0,
+            minor: 1,
+            patch: 0,
+        },
+        features: Default::default(),
+    }
+}
+
+plugin_get_game_methods!(Skat{generate_metadata()});

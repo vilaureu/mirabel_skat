@@ -8,6 +8,9 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[dependencies]
+nom = "7.1"
+
 [dependencies.mirabel]
 git = "https://github.com/vilaureu/mirabel_rs"
 rev = "fd6c277cfc27f3227bfdf5d8beccff46c84e09d7"

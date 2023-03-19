@@ -1,3 +1,14 @@
+use nom::{
+    branch::alt,
+    bytes::complete::{tag, tag_no_case},
+    character::complete::{char, space0},
+    combinator::{map, value, cut},
+    error::{context, VerboseError},
+    sequence::{separated_pair, tuple},
+};
+
+type IResult<I, O> = nom::IResult<I, O, VerboseError<I>>;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Player {
     Forehand,
@@ -7,23 +18,6 @@ pub(crate) enum Player {
 
 impl Player {
     pub(crate) const COUNT: usize = 3;
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Suit {
-    Clubs,
-    Spades,
-    Hearts,
-    Diamonds,
-}
-
-impl Suit {
-    // FIXME: Replace with std::mem::variant_count when stabilized.
-    pub(crate) const COUNT: usize = 4;
-
-    pub(crate) const fn all() -> [Self; Self::COUNT] {
-        [Self::Clubs, Self::Spades, Self::Hearts, Self::Diamonds]
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,22 +47,74 @@ impl CardValue {
             Self::Ace,
         ]
     }
+
+    /// Parses a card value.
+    ///
+    /// The input could be either `7`, `8`, `9`, `J`, `Q`, `K`, `10`, or `A`
+    /// ignoring case.
+    fn parse(input: &str) -> IResult<&str, Self> {
+        context(
+            "card value",
+            alt((
+                value(Self::Num7, char('7')),
+                value(Self::Num8, char('8')),
+                value(Self::Num9, char('9')),
+                value(Self::Jack, tag_no_case("J")),
+                value(Self::Queen, tag_no_case("Q")),
+                value(Self::King, tag_no_case("K")),
+                value(Self::Num10, tag("10")),
+                value(Self::Ace, tag_no_case("A")),
+            )),
+        )(input)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Suit {
+    Clubs,
+    Spades,
+    Hearts,
+    Diamonds,
+}
+
+impl Suit {
+    // FIXME: Replace with std::mem::variant_count when stabilized.
+    pub(crate) const COUNT: usize = 4;
+
+    pub(crate) const fn all() -> [Self; Self::COUNT] {
+        [Self::Clubs, Self::Spades, Self::Hearts, Self::Diamonds]
+    }
+
+    /// Parses a suit.
+    ///
+    /// The input could be either `C`, `S`, `H`, or `D` ignoring case.
+    fn parse(input: &str) -> IResult<&str, Self> {
+        context(
+            "suit",
+            alt((
+                value(Self::Clubs, tag_no_case("C")),
+                value(Self::Spades, tag_no_case("S")),
+                value(Self::Hearts, tag_no_case("H")),
+                value(Self::Diamonds, tag_no_case("D")),
+            )),
+        )(input)
+    }
 }
 
 // FIXME: Fit into a single byte.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Card(Suit, CardValue);
+pub(crate) struct Card(CardValue, Suit);
 
 impl Card {
     pub(crate) const COUNT: usize = Suit::COUNT * CardValue::COUNT;
 
     pub(crate) const fn all() -> [Self; Self::COUNT] {
-        let mut cards = [Self(Suit::Clubs, CardValue::Num7); Self::COUNT];
+        let mut cards = [Self(CardValue::Num7, Suit::Clubs); Self::COUNT];
         let mut suit = 0;
         while suit < Suit::COUNT {
             let mut value = 0;
             while value < CardValue::COUNT {
-                let card = Self(Suit::all()[suit], CardValue::all()[value]);
+                let card = Self(CardValue::all()[value], Suit::all()[suit]);
                 cards[card.index()] = card;
                 value += 1;
             }
@@ -79,7 +125,26 @@ impl Card {
 
     /// Returns the index of `self` into [`Self::all()`].
     pub(crate) const fn index(&self) -> usize {
-        self.0 as usize * CardValue::COUNT + self.1 as usize
+        self.0 as usize * Suit::COUNT + self.1 as usize
+    }
+
+    /// Parses a card value followed by its suit.
+    pub(crate) fn parse(input: &str) -> IResult<&str, Self> {
+        context(
+            "card",
+            map(
+                separated_pair(CardValue::parse, space0, cut(Suit::parse)),
+                |(v, s)| Self(v, s),
+            ),
+        )(input)
+    }
+
+    /// Parses a string to a card interpreting `?` as [`None`].
+    pub(crate) fn parse_optional(input: &str) -> IResult<&str, Option<Self>> {
+        context(
+            "optional card",
+            alt((value(None, char('?')), map(Self::parse, Some))),
+        )(input)
     }
 }
 
