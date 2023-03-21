@@ -1,4 +1,8 @@
-use std::fmt::{self, Display};
+use std::{
+    borrow::Borrow,
+    fmt::{self, Display},
+    ops::Deref,
+};
 
 use mirabel::sys::{player_id, PLAYER_NONE, PLAYER_RAND};
 use nom::{
@@ -21,6 +25,10 @@ pub(crate) enum Player {
 
 impl Player {
     pub(crate) const COUNT: usize = 3;
+
+    const fn all() -> [Self; Self::COUNT] {
+        [Self::Forehand, Self::Middlehand, Self::Rearhand]
+    }
 }
 
 impl From<player_id> for Player {
@@ -33,12 +41,27 @@ impl From<player_id> for Player {
         const _: () = assert!(0 == PLAYER_NONE);
         #[allow(clippy::assertions_on_constants)]
         const _: () = assert!(PLAYER_RAND > 3);
-        match value {
-            1 => Self::Forehand,
-            2 => Self::Middlehand,
-            3 => Self::Rearhand,
-            0 | 4.. => panic!("unexpected player id"),
-        }
+        Self::all()[usize::from(value.checked_sub(1).unwrap())]
+    }
+}
+
+impl From<Player> for player_id {
+    fn from(value: Player) -> Self {
+        value as u8 + 1
+    }
+}
+
+impl Display for Player {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Player::Forehand => "forehand",
+                Player::Middlehand => "middlehand",
+                Player::Rearhand => "rearhand",
+            }
+        )
     }
 }
 
@@ -205,8 +228,8 @@ impl Card {
 
     /// Inverse of [`Self::parse_optional`].
     pub(crate) fn fmt_optional(
-        f: &mut fmt::Formatter,
         card: Option<Self>,
+        f: &mut fmt::Formatter,
     ) -> Result<(), fmt::Error> {
         match card {
             None => write!(f, "?"),
@@ -296,5 +319,45 @@ impl CardStruct {
             self.hands[player] = Default::default();
         }
         self.skat = Default::default();
+    }
+
+    /// Write out the list of cards with each card preceded by a space.
+    fn fmt_card_vec(cards: &<CardVec as Deref>::Target, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for &card in cards {
+            write!(f, " ")?;
+            Card::fmt_optional(card, f)?;
+        }
+        Ok(())
+    }
+}
+
+impl Display for CardStruct {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for player in Player::all() {
+            write!(f, "{player}:")?;
+            Self::fmt_card_vec(&self.hands[player as usize], f)?;
+            writeln!(f)?;
+        }
+
+        write!(f, "Skat:")?;
+        Self::fmt_card_vec(&self.skat, f)?;
+
+        if !self.trick.is_empty() {
+            writeln!(f)?;
+            write!(f, "current trick:")?;
+            for card in &self.trick {
+                write!(f, " {card}")?;
+            }
+        }
+
+        if let Some(trick) = self.last_trick {
+            writeln!(f)?;
+            write!(f, "last trick:")?;
+            for card in trick {
+                write!(f, " {card}")?;
+            }
+        }
+
+        Ok(())
     }
 }

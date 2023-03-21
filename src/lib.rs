@@ -15,7 +15,7 @@ use mirabel::{
     error::{Error, ErrorCode, Result},
     game::{
         move_code, player_id, semver, GameFeatures, GameMethods, Metadata, MoveCode, MoveData,
-        MOVE_NONE, PLAYER_NONE, PLAYER_RAND,
+        MOVE_NONE, PLAYER_RAND,
     },
     game_init::GameInit,
     plugin_get_game_methods, MoveDataSync,
@@ -36,6 +36,17 @@ enum GameState {
     Bidding,
     Declaring,
     Playing,
+}
+
+impl Display for GameState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GameState::Dealing => write!(f, "dealing"),
+            GameState::Bidding => todo!(),
+            GameState::Declaring => todo!(),
+            GameState::Playing => todo!(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -92,7 +103,10 @@ impl GameMethods for Skat {
     fn players_to_move(&mut self, players: &mut Vec<player_id>) -> Result<()> {
         players.push(match self.state {
             GameState::Dealing => PLAYER_RAND,
-            GameState::Bidding => todo!(),
+            GameState::Bidding => {
+                // TODO
+                Player::Middlehand.into()
+            }
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
         });
@@ -279,6 +293,18 @@ impl GameMethods for Skat {
         self.cards.redact(keep);
         Ok(())
     }
+
+    fn print(&mut self, _player: player_id, str_buf: &mut mirabel::ValidCString) -> Result<()> {
+        write!(str_buf, "{}", self).expect("failed to write to print buffer");
+        Ok(())
+    }
+}
+
+impl Display for Skat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}", self.cards)?;
+        writeln!(f, "{}", self.state)
+    }
 }
 
 /// Representation of a card move which could also be a hidden action.
@@ -361,8 +387,8 @@ impl FromStr for CardAction {
 impl Display for CardAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            CardAction::Hidden => Card::fmt_optional(f, None),
-            CardAction::Card(c) => Card::fmt_optional(f, Some(c)),
+            CardAction::Hidden => Card::fmt_optional(None, f),
+            CardAction::Card(c) => Card::fmt_optional(Some(c), f),
         }
     }
 }
@@ -397,6 +423,7 @@ fn generate_metadata() -> Metadata {
         features: GameFeatures {
             random_moves: true,
             hidden_information: true,
+            print: true,
             ..Default::default()
         },
     }

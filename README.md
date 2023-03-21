@@ -11,6 +11,7 @@ This is an implementation of
 $ surena repl
 > /load_plugin ./target/debug/libmirabel_skat.so
 > /create def
+> /resolve_random
 ```
 
 ## Libraries
