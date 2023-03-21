@@ -5,14 +5,17 @@
 
 mod structures;
 
-use std::str::FromStr;
+use std::{
+    fmt::{self, Display, Write},
+    str::FromStr,
+};
 
 use mirabel::{
     cstr,
     error::{Error, ErrorCode, Result},
     game::{
-        move_code, player_id, semver, GameMethods, Metadata, MoveCode, MoveData, MOVE_NONE,
-        PLAYER_NONE, PLAYER_RAND,
+        move_code, player_id, semver, GameFeatures, GameMethods, Metadata, MoveCode, MoveData,
+        MOVE_NONE, PLAYER_NONE, PLAYER_RAND,
     },
     game_init::GameInit,
     plugin_get_game_methods, MoveDataSync,
@@ -26,18 +29,13 @@ use nom::{
 };
 use structures::{Card, CardStruct, Player};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 enum GameState {
+    #[default]
     Dealing,
     Bidding,
     Declaring,
     Playing,
-}
-
-impl Default for GameState {
-    fn default() -> Self {
-        Self::Dealing
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -155,7 +153,16 @@ impl GameMethods for Skat {
         mov: MoveDataSync<<Self::Move as MoveData>::Rust<'_>>,
         str_buf: &mut mirabel::ValidCString,
     ) -> Result<()> {
-        todo!()
+        match self.state {
+            GameState::Dealing => {
+                let card: CardAction = mov.md.try_into()?;
+                write!(str_buf, "{card}").expect("writing card action move failed");
+            }
+            GameState::Bidding => todo!(),
+            GameState::Declaring => todo!(),
+            GameState::Playing => todo!(),
+        }
+        Ok(())
     }
 
     fn make_move(
@@ -224,6 +231,89 @@ impl GameMethods for Skat {
         }
 
         Ok(())
+    }
+
+    fn get_concrete_move_probabilities(
+        &mut self,
+        move_probabilities: &mut Vec<std::ffi::c_float>,
+    ) -> Result<()> {
+        // FIXME: Replace with a fixed-capacity array vector.
+        let mut moves = vec![];
+        self.get_concrete_moves(PLAYER_RAND, &mut moves)?;
+        for _ in &moves {
+            move_probabilities.push(1f32 / moves.len() as f32);
+        }
+        Ok(())
+    }
+
+    fn get_actions(&mut self, player: player_id, moves: &mut Vec<Self::Move>) -> Result<()> {
+        todo!()
+    }
+
+    fn move_to_action(
+        &mut self,
+        player: player_id,
+        mov: MoveDataSync<<Self::Move as MoveData>::Rust<'_>>,
+        target_player: player_id,
+    ) -> Result<Self::Move> {
+        // Catch misuse of this function and behave as the identity in this
+        // case.
+        if player == target_player || target_player == PLAYER_RAND {
+            return Ok(mov.md.into());
+        }
+
+        match self.state {
+            GameState::Dealing => {
+                assert_eq!(PLAYER_RAND, player);
+                let target = deal_to(self.cards.count());
+                if target
+                    .filter(|&t| t == self.player_from_id(target_player))
+                    .is_some()
+                {
+                    Ok(mov.md.into())
+                } else {
+                    Ok(CardAction::HIDDEN.into())
+                }
+            }
+            GameState::Bidding => todo!(),
+            GameState::Declaring => todo!(),
+            GameState::Playing => todo!(),
+        }
+    }
+
+    fn get_random_move(&mut self, seed: u64) -> Result<Self::Move> {
+        // FIXME: Replace with a fixed-capacity array vector.
+        let mut moves = vec![];
+        self.get_concrete_moves(PLAYER_RAND, &mut moves)?;
+        Ok(moves[seed as usize % moves.len()])
+    }
+
+    fn redact_keep_state(&mut self, players: &[player_id]) -> Result<()> {
+        let mut keep = [false; Player::COUNT];
+        for &player in players {
+            keep[self.player_from_id(player) as usize] = true;
+        }
+        self.cards.redact(keep);
+        Ok(())
+    }
+}
+
+impl Skat {
+    /// Returns the [`Player`] corresponding to the [`player_id`] for this game.
+    ///
+    /// # Panics
+    /// Panics if `player` is out of range.
+    fn player_from_id(&self, player: player_id) -> Player {
+        assert!(0 < player);
+        assert!(usize::from(player) <= Player::COUNT);
+        match (usize::from(player) - 1 + Player::COUNT - (usize::from(self.dealer) - 1))
+            % Player::COUNT
+        {
+            0 => Player::Rearhand,
+            1 => Player::Forehand,
+            2 => Player::Middlehand,
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -304,6 +394,15 @@ impl FromStr for CardAction {
     }
 }
 
+impl Display for CardAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            CardAction::Hidden => Card::fmt_optional(f, None),
+            CardAction::Card(c) => Card::fmt_optional(f, Some(c)),
+        }
+    }
+}
+
 /// Returns the player to which should be dealt next.
 ///
 /// `dealt` is the number of already dealt cards.
@@ -331,7 +430,11 @@ fn generate_metadata() -> Metadata {
             minor: 1,
             patch: 0,
         },
-        features: Default::default(),
+        features: GameFeatures {
+            random_moves: true,
+            hidden_information: true,
+            ..Default::default()
+        },
     }
 }
 

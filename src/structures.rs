@@ -1,3 +1,5 @@
+use std::fmt::{self, Display};
+
 use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case},
@@ -69,6 +71,25 @@ impl CardValue {
     }
 }
 
+impl Display for CardValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                CardValue::Num7 => "7",
+                CardValue::Num8 => "8",
+                CardValue::Num9 => "9",
+                CardValue::Jack => "J",
+                CardValue::Queen => "Q",
+                CardValue::King => "K",
+                CardValue::Num10 => "10",
+                CardValue::Ace => "A",
+            }
+        )
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Suit {
     Clubs,
@@ -98,6 +119,21 @@ impl Suit {
                 value(Self::Diamonds, tag_no_case("D")),
             )),
         )(input)
+    }
+}
+
+impl Display for Suit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Suit::Clubs => "C",
+                Suit::Spades => "S",
+                Suit::Hearts => "H",
+                Suit::Diamonds => "D",
+            }
+        )
     }
 }
 
@@ -146,6 +182,23 @@ impl Card {
             alt((value(None, char('?')), map(Self::parse, Some))),
         )(input)
     }
+
+    /// Inverse of [`Self::parse_optional`].
+    pub(crate) fn fmt_optional(
+        f: &mut fmt::Formatter,
+        card: Option<Self>,
+    ) -> Result<(), fmt::Error> {
+        match card {
+            None => write!(f, "?"),
+            Some(c) => c.fmt(f),
+        }
+    }
+}
+
+impl Display for Card {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.0, self.1)
+    }
 }
 
 pub(crate) type CardVec = Vec<Option<Card>>;
@@ -154,7 +207,7 @@ pub(crate) type CardVec = Vec<Option<Card>>;
 #[derive(Default, Clone, Debug)]
 pub(crate) struct CardStruct {
     /// # Invariants
-    /// At most [`Self::HAND_SIZE`] cards per hand.
+    /// At most [`Self::HAND_SIZE`]`+`[`Self::SKAT_SIZE`] cards per hand.
     pub(crate) hands: [CardVec; Player::COUNT],
     /// # Invariants
     /// At most [`Self::SKAT_SIZE`] cards per hand.
@@ -211,6 +264,17 @@ impl CardStruct {
             + self.skat.len()
             + self.trick.len()
             + self.last_trick.map(|t| t.len()).unwrap_or_default();
-        count.try_into().unwrap()
+        count.try_into().expect("too many cards in card structure")
+    }
+
+    /// Redact hidden information like hands and the Skat.
+    ///
+    /// This keeps the state of players for which `keep[player_index]` is
+    /// `true`.
+    pub(crate) fn redact(&mut self, keep: [bool; Player::COUNT]) {
+        for (player, _) in keep.into_iter().enumerate().filter(|&(_, k)| !k) {
+            self.hands[player] = Default::default();
+        }
+        self.skat = Default::default();
     }
 }
