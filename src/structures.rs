@@ -1,5 +1,6 @@
 use std::fmt::{self, Display};
 
+use mirabel::sys::{player_id, PLAYER_NONE, PLAYER_RAND};
 use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case},
@@ -20,6 +21,25 @@ pub(crate) enum Player {
 
 impl Player {
     pub(crate) const COUNT: usize = 3;
+}
+
+impl From<player_id> for Player {
+    /// Convert a [`player_id`] to [`Self`].
+    ///
+    /// # Panics
+    /// Panics if the id is out of range.
+    fn from(value: player_id) -> Self {
+        #[allow(clippy::assertions_on_constants)]
+        const _: () = assert!(0 == PLAYER_NONE);
+        #[allow(clippy::assertions_on_constants)]
+        const _: () = assert!(PLAYER_RAND > 3);
+        match value {
+            1 => Self::Forehand,
+            2 => Self::Middlehand,
+            3 => Self::Rearhand,
+            0 | 4.. => panic!("unexpected player id"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

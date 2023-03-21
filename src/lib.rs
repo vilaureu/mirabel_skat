@@ -38,12 +38,9 @@ enum GameState {
     Playing,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct Skat {
     cards: CardStruct,
-    /// # Invariants
-    /// This must be a valid player.
-    dealer: player_id,
     state: GameState,
 }
 
@@ -54,20 +51,6 @@ impl PartialEq for Skat {
 }
 
 impl Eq for Skat {}
-
-impl Default for Skat {
-    fn default() -> Self {
-        #[allow(clippy::assertions_on_constants)]
-        const _: () = assert!(0 == PLAYER_NONE);
-        #[allow(clippy::assertions_on_constants)]
-        const _: () = assert!(PLAYER_RAND > 3);
-        Self {
-            cards: Default::default(),
-            dealer: 1,
-            state: Default::default(),
-        }
-    }
-}
 
 impl GameMethods for Skat {
     type Move = MoveCode;
@@ -267,7 +250,7 @@ impl GameMethods for Skat {
                 assert_eq!(PLAYER_RAND, player);
                 let target = deal_to(self.cards.count());
                 if target
-                    .filter(|&t| t == self.player_from_id(target_player))
+                    .filter(|&t| t == Player::from(target_player))
                     .is_some()
                 {
                     Ok(mov.md.into())
@@ -291,29 +274,10 @@ impl GameMethods for Skat {
     fn redact_keep_state(&mut self, players: &[player_id]) -> Result<()> {
         let mut keep = [false; Player::COUNT];
         for &player in players {
-            keep[self.player_from_id(player) as usize] = true;
+            keep[Player::from(player) as usize] = true;
         }
         self.cards.redact(keep);
         Ok(())
-    }
-}
-
-impl Skat {
-    /// Returns the [`Player`] corresponding to the [`player_id`] for this game.
-    ///
-    /// # Panics
-    /// Panics if `player` is out of range.
-    fn player_from_id(&self, player: player_id) -> Player {
-        assert!(0 < player);
-        assert!(usize::from(player) <= Player::COUNT);
-        match (usize::from(player) - 1 + Player::COUNT - (usize::from(self.dealer) - 1))
-            % Player::COUNT
-        {
-            0 => Player::Rearhand,
-            1 => Player::Forehand,
-            2 => Player::Middlehand,
-            _ => unreachable!(),
-        }
     }
 }
 
