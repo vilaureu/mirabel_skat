@@ -1,17 +1,21 @@
 use std::{
-    borrow::Borrow,
     fmt::{self, Display},
-    ops::Deref,
+    ops::{Deref, DerefMut},
+    str::FromStr,
 };
 
-use mirabel::sys::{player_id, PLAYER_NONE, PLAYER_RAND};
+use mirabel::{
+    error::{Error, ErrorCode},
+    game::{move_code, player_id, MoveCode, MOVE_NONE, PLAYER_NONE, PLAYER_RAND},
+};
 use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case},
     character::complete::{char, space0},
-    combinator::{cut, map, value},
-    error::{context, VerboseError},
-    sequence::separated_pair,
+    combinator::{cut, eof, map, value},
+    error::{context, convert_error, VerboseError},
+    sequence::{delimited, separated_pair, terminated},
+    Finish,
 };
 
 type IResult<I, O> = nom::IResult<I, O, VerboseError<I>>;
@@ -186,6 +190,8 @@ pub(crate) struct Card(CardValue, Suit);
 
 impl Card {
     pub(crate) const COUNT: usize = Suit::COUNT * CardValue::COUNT;
+    /// The number of bits needed to encode a [`Self`].
+    const BITS: u32 = (Self::COUNT - 1).ilog2() + 1;
 
     pub(crate) const fn all() -> [Self; Self::COUNT] {
         let mut cards = [Self(CardValue::Num7, Suit::Clubs); Self::COUNT];
@@ -217,25 +223,6 @@ impl Card {
             ),
         )(input)
     }
-
-    /// Parses a string to a card interpreting `?` as [`None`].
-    pub(crate) fn parse_optional(input: &str) -> IResult<&str, Option<Self>> {
-        context(
-            "optional card",
-            alt((value(None, char('?')), map(Self::parse, Some))),
-        )(input)
-    }
-
-    /// Inverse of [`Self::parse_optional`].
-    pub(crate) fn fmt_optional(
-        card: Option<Self>,
-        f: &mut fmt::Formatter,
-    ) -> Result<(), fmt::Error> {
-        match card {
-            None => write!(f, "?"),
-            Some(c) => c.fmt(f),
-        }
-    }
 }
 
 impl Display for Card {
@@ -244,7 +231,178 @@ impl Display for Card {
     }
 }
 
-pub(crate) type CardVec = Vec<Option<Card>>;
+impl From<Card> for move_code {
+    /// Just use the lower [`Self::BITS`] bits for representing this card.
+    fn from(value: Card) -> Self {
+        #[allow(clippy::assertions_on_constants)]
+        const _: () = assert!(move_code::MAX == MOVE_NONE);
+        assert!(move_code::try_from(Card::COUNT).unwrap() <= move_code::MAX);
+
+        value.index() as move_code
+    }
+}
+
+impl TryFrom<move_code> for Card {
+    type Error = Error;
+
+    fn try_from(value: move_code) -> Result<Self, Self::Error> {
+        usize::try_from(value)
+            .ok()
+            .and_then(|v| Card::all().get(v).cloned())
+            .ok_or_else(|| {
+                Error::new_static(ErrorCode::InvalidMove, "card value in move too high\0")
+            })
+    }
+}
+
+/// This represents a card which can have a known value or a hidden one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OptCard {
+    Hidden,
+    Known(Card),
+}
+
+impl OptCard {
+    /// The number of bits needed to encode a [`Self`].
+    const BITS: u32 = Card::BITS + 1;
+    pub const HIDDEN: move_code = 1 << Card::BITS;
+
+    /// Parses a string to a card interpreting `?` as [`Self::Hidden`].
+    pub(crate) fn parse(input: &str) -> IResult<&str, Self> {
+        context(
+            "optional card",
+            alt((
+                value(Self::Hidden, char('?')),
+                map(Card::parse, Self::Known),
+            )),
+        )(input)
+    }
+
+    fn ok(self) -> Option<Card> {
+        match self {
+            OptCard::Hidden => None,
+            OptCard::Known(card) => Some(card),
+        }
+    }
+}
+
+impl Display for OptCard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Hidden => write!(f, "?"),
+            Self::Known(c) => c.fmt(f),
+        }
+    }
+}
+
+impl From<Card> for OptCard {
+    fn from(value: Card) -> Self {
+        Self::Known(value)
+    }
+}
+
+impl IntoIterator for OptCard {
+    type Item = Card;
+    type IntoIter = std::option::IntoIter<Card>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.ok().into_iter()
+    }
+}
+
+impl From<OptCard> for move_code {
+    /// Transform [`OptCard`] into a [`move_code`].
+    ///
+    /// # Encoding
+    /// [`OptCard`] is encoded as a [`move_code`] in the following way:
+    /// ```text
+    /// HSB 0...HCCCCC LSB
+    ///         ║╚╩╩╩╩ Card index if not an action
+    ///         ╚ 1 if hidden
+    /// ```
+    fn from(value: OptCard) -> Self {
+        const _: () = assert!(OptCard::BITS <= move_code::BITS);
+
+        match value {
+            OptCard::Hidden => OptCard::HIDDEN,
+            OptCard::Known(card) => card.into(),
+        }
+    }
+}
+
+impl From<OptCard> for MoveCode {
+    fn from(value: OptCard) -> Self {
+        move_code::from(value).into()
+    }
+}
+
+impl TryFrom<move_code> for OptCard {
+    type Error = Error;
+
+    fn try_from(value: move_code) -> std::result::Result<Self, Self::Error> {
+        Ok(if value == Self::HIDDEN {
+            Self::Hidden
+        } else {
+            Self::Known(value.try_into()?)
+        })
+    }
+}
+
+impl FromStr for OptCard {
+    type Err = Error;
+
+    /// Parses into a [`Self`] like [`Self::parse()`] but with trimming.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(
+            terminated(delimited(space0, OptCard::parse, space0), eof)(s)
+                .finish()
+                .map_err(|e| {
+                    Error::new_dynamic(
+                        ErrorCode::InvalidInput,
+                        format!("failed to parse optional card:\n{}", convert_error(s, e)),
+                    )
+                })?
+                .1,
+        )
+    }
+}
+
+/// A vector of [`OptCard`]s with helper functionality.
+#[derive(PartialEq, Eq, Debug, Clone, Default)]
+pub(crate) struct CardVec(Vec<OptCard>);
+
+impl CardVec {
+    fn iter_known(&self) -> impl Iterator<Item = Card> + '_ {
+        self.iter().cloned().flatten()
+    }
+}
+
+impl Deref for CardVec {
+    type Target = Vec<OptCard>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for CardVec {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Display for CardVec {
+    /// Write a space separated list of cards.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, card) in self.iter().enumerate() {
+            if i > 0 {
+                write!(f, " ")?;
+            }
+            write!(f, "{card}")?;
+        }
+        Ok(())
+    }
+}
 
 // FIXME: Replace vectors with some array vectors.
 #[derive(Default, Clone, Debug)]
@@ -269,9 +427,8 @@ impl CardStruct {
     pub(crate) fn iter(&self) -> impl Iterator<Item = Card> + '_ {
         self.hands
             .iter()
-            .flat_map(|h| h.iter().cloned())
-            .chain(self.skat.iter().cloned())
-            .flatten()
+            .flat_map(|h| h.iter_known())
+            .chain(self.skat.iter_known())
             .chain(self.trick.iter().cloned())
             .chain(self.last_trick.iter().flat_map(|t| t.iter().cloned()))
     }
@@ -291,8 +448,7 @@ impl CardStruct {
     /// Give the `target` a `card`.
     ///
     /// The target can be a [`Player`] or [`None`] for the Skat.
-    /// The card can be a [`Card`] or [`None`] for an unknown card.
-    pub(crate) fn give(&mut self, target: Option<Player>, card: Option<Card>) {
+    pub(crate) fn give(&mut self, target: Option<Player>, card: OptCard) {
         match target {
             Some(player) => self.hands[player as usize].push(card),
             None => self.skat.push(card),
@@ -303,7 +459,7 @@ impl CardStruct {
     ///
     /// This is useful in the dealing phase to find the number of dealt cards.
     pub(crate) fn count(&self) -> u8 {
-        let count: usize = self.hands.iter().map(Vec::len).sum::<usize>()
+        let count: usize = self.hands.iter().map(|v| v.len()).sum::<usize>()
             + self.skat.len()
             + self.trick.len()
             + self.last_trick.map(|t| t.len()).unwrap_or_default();
@@ -320,27 +476,16 @@ impl CardStruct {
         }
         self.skat = Default::default();
     }
-
-    /// Write out the list of cards with each card preceded by a space.
-    fn fmt_card_vec(cards: &<CardVec as Deref>::Target, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for &card in cards {
-            write!(f, " ")?;
-            Card::fmt_optional(card, f)?;
-        }
-        Ok(())
-    }
 }
 
 impl Display for CardStruct {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for player in Player::all() {
-            write!(f, "{player}:")?;
-            Self::fmt_card_vec(&self.hands[player as usize], f)?;
+            write!(f, "{player}: {}", self.hands[player as usize])?;
             writeln!(f)?;
         }
 
-        write!(f, "Skat:")?;
-        Self::fmt_card_vec(&self.skat, f)?;
+        write!(f, "Skat: {}", self.skat)?;
 
         if !self.trick.is_empty() {
             writeln!(f)?;

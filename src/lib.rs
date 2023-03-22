@@ -29,6 +29,8 @@ use nom::{
 };
 use structures::{Card, CardStruct, Player};
 
+use crate::structures::OptCard;
+
 #[derive(Clone, Copy, Debug, Default)]
 enum GameState {
     #[default]
@@ -117,7 +119,7 @@ impl GameMethods for Skat {
         match self.state {
             GameState::Dealing => {
                 for card in self.cards.iter_unknown() {
-                    moves.push(CardAction::Card(card).into())
+                    moves.push(OptCard::from(card).into())
                 }
             }
             GameState::Bidding => todo!(),
@@ -135,7 +137,7 @@ impl GameMethods for Skat {
     fn get_move_data(&mut self, _player: player_id, string: &str) -> Result<Self::Move> {
         Ok(match self.state {
             GameState::Dealing => {
-                let card: CardAction = string.parse()?;
+                let card: OptCard = string.parse()?;
                 card.into()
             }
             GameState::Bidding => todo!(),
@@ -152,7 +154,7 @@ impl GameMethods for Skat {
     ) -> Result<()> {
         match self.state {
             GameState::Dealing => {
-                let card: CardAction = mov.md.try_into()?;
+                let card: OptCard = mov.md.try_into()?;
                 write!(str_buf, "{card}").expect("writing card action move failed");
             }
             GameState::Bidding => todo!(),
@@ -173,16 +175,7 @@ impl GameMethods for Skat {
                 let card = mov.md.try_into()?;
                 let dealt = self.cards.count();
                 let target = deal_to(dealt);
-                self.cards.give(
-                    target,
-                    match card {
-                        CardAction::Hidden => {
-                            // Add an unknown card (None) to the player.
-                            None
-                        }
-                        CardAction::Card(card) => Some(card),
-                    },
-                );
+                self.cards.give(target, card);
                 if usize::from(dealt) + 1 >= Card::COUNT {
                     self.state = GameState::Bidding;
                 }
@@ -213,7 +206,7 @@ impl GameMethods for Skat {
                     ));
                 }
                 let card = mov.md.try_into()?;
-                if let CardAction::Card(card) = card {
+                if let OptCard::Known(card) = card {
                     if self.cards.iter().any(|c| c == card) {
                         return Err(Error::new_static(
                             ErrorCode::InvalidMove,
@@ -269,7 +262,7 @@ impl GameMethods for Skat {
                 {
                     Ok(mov.md.into())
                 } else {
-                    Ok(CardAction::HIDDEN.into())
+                    Ok(OptCard::Hidden.into())
                 }
             }
             GameState::Bidding => todo!(),
@@ -304,92 +297,6 @@ impl Display for Skat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{}", self.cards)?;
         writeln!(f, "{}", self.state)
-    }
-}
-
-/// Representation of a card move which could also be a hidden action.
-///
-/// # Encoding
-/// [`Self`] is encoded as a [`move_code`] in the following way:
-/// ```text
-/// HSB X0...0XXXXX LSB
-///     ║     ╚╩╩╩╩ Card index if not an action
-///     ╚ 1 if action
-/// ```
-#[derive(Clone, Copy, Debug)]
-enum CardAction {
-    Hidden,
-    Card(Card),
-}
-
-impl CardAction {
-    const HIDDEN: move_code = (0b1 as move_code).reverse_bits();
-}
-
-impl From<CardAction> for move_code {
-    fn from(value: CardAction) -> Self {
-        #[allow(clippy::assertions_on_constants)]
-        const _: () = assert!(move_code::MAX == MOVE_NONE);
-        // The highest bit in a move_code must never be set for a card.
-        assert!(move_code::try_from(Card::COUNT - 1).unwrap() < CardAction::HIDDEN);
-        match value {
-            CardAction::Hidden => CardAction::HIDDEN,
-            CardAction::Card(card) => card.index() as move_code,
-        }
-    }
-}
-
-impl From<CardAction> for MoveCode {
-    fn from(value: CardAction) -> Self {
-        move_code::from(value).into()
-    }
-}
-
-impl TryFrom<move_code> for CardAction {
-    type Error = Error;
-
-    fn try_from(value: move_code) -> std::result::Result<Self, Self::Error> {
-        Ok(if value == Self::HIDDEN {
-            Self::Hidden
-        } else {
-            Self::Card(
-                usize::try_from(value)
-                    .ok()
-                    .and_then(|v| Card::all().get(v).cloned())
-                    .ok_or_else(|| {
-                        Error::new_static(ErrorCode::InvalidMove, "card value in move too high\0")
-                    })?,
-            )
-        })
-    }
-}
-
-impl FromStr for CardAction {
-    type Err = Error;
-
-    /// Parses into a card action like [`Card::parse_optional()`].
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let (_, card) = terminated(delimited(space0, Card::parse_optional, space0), eof)(s)
-            .finish()
-            .map_err(|e| {
-                Error::new_dynamic(
-                    ErrorCode::InvalidInput,
-                    format!("failed to parse card action:\n{}", convert_error(s, e)),
-                )
-            })?;
-        Ok(match card {
-            Some(c) => Self::Card(c),
-            None => Self::Hidden,
-        })
-    }
-}
-
-impl Display for CardAction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            CardAction::Hidden => Card::fmt_optional(None, f),
-            CardAction::Card(c) => Card::fmt_optional(Some(c), f),
-        }
     }
 }
 
