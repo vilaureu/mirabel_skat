@@ -5,28 +5,18 @@
 
 mod structures;
 
-use std::{
-    fmt::{self, Display, Write},
-    str::FromStr,
-};
+use std::fmt::{self, Display, Write};
 
 use mirabel::{
     cstr,
     error::{Error, ErrorCode, Result},
     game::{
-        move_code, player_id, semver, GameFeatures, GameMethods, Metadata, MoveCode, MoveData,
-        MOVE_NONE, PLAYER_RAND,
+        player_id, semver, GameFeatures, GameMethods, Metadata, MoveCode, MoveData, PLAYER_RAND,
     },
     game_init::GameInit,
     plugin_get_game_methods, MoveDataSync,
 };
-use nom::{
-    character::complete::space0,
-    combinator::eof,
-    error::convert_error,
-    sequence::{delimited, terminated},
-    Finish,
-};
+
 use structures::{Card, CardStruct, Player};
 
 use crate::structures::OptCard;
@@ -35,18 +25,112 @@ use crate::structures::OptCard;
 enum GameState {
     #[default]
     Dealing,
-    Bidding,
+    Bidding {
+        // FIXME: This could fit into 8 bytes when a offset is used.
+        bid: u16,
+        state: BiddingState,
+    },
     Declaring,
     Playing,
+}
+
+impl GameState {
+    const MINIMUM_BID: u16 = 18;
 }
 
 impl Display for GameState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GameState::Dealing => write!(f, "dealing"),
-            GameState::Bidding => todo!(),
+            GameState::Bidding { bid, state } => {
+                if *bid < Self::MINIMUM_BID {
+                    writeln!(f, "bidding just started")?;
+                } else {
+                    writeln!(f, "bidding at {bid}")?;
+                }
+                write!(f, "{state}")
+            }
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BiddingState {
+    #[default]
+    MiddleCallsFore,
+    ForeRespondsMiddle,
+    RearCallsFore,
+    ForeRespondsRear,
+    RearCallsMiddle,
+    MiddleRespondsRear,
+    /// Forehand is free to decide whether to play or not.
+    ///
+    /// This happens when middlehand and rearhand directly pass.
+    Forehand,
+}
+
+impl BiddingState {
+    /// Returns true when `self` represents a respond to a call.
+    fn respond(&self) -> bool {
+        match self {
+            Self::MiddleCallsFore => false,
+            Self::ForeRespondsMiddle => true,
+            Self::RearCallsFore => false,
+            Self::ForeRespondsRear => true,
+            Self::RearCallsMiddle => false,
+            Self::MiddleRespondsRear => true,
+            Self::Forehand => false,
+        }
+    }
+
+    /// Who is currently making a statement.
+    fn source(&self) -> Player {
+        match self {
+            Self::MiddleCallsFore => Player::Middlehand,
+            Self::ForeRespondsMiddle => Player::Forehand,
+            Self::RearCallsFore => Player::Rearhand,
+            Self::ForeRespondsRear => Player::Forehand,
+            Self::RearCallsMiddle => Player::Rearhand,
+            Self::MiddleRespondsRear => Player::Middlehand,
+            Self::Forehand => Player::Forehand,
+        }
+    }
+
+    /// Who is currently the audience for the statement.
+    ///
+    /// # Panics
+    /// Panics for [`Self::Forehand`].
+    fn target(&self) -> Player {
+        match self {
+            Self::MiddleCallsFore => Player::Forehand,
+            Self::ForeRespondsMiddle => Player::Middlehand,
+            Self::RearCallsFore => Player::Forehand,
+            Self::ForeRespondsRear => Player::Rearhand,
+            Self::RearCallsMiddle => Player::Middlehand,
+            Self::MiddleRespondsRear => Player::Rearhand,
+            Self::Forehand => panic!("the forehand is the only one left bidding"),
+        }
+    }
+}
+
+impl Display for BiddingState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if matches!(self, Self::Forehand) {
+            write!(f, "only the forehand is left bidding")
+        } else {
+            write!(
+                f,
+                "{} {} {}",
+                self.source(),
+                if self.respond() {
+                    "should respond to"
+                } else {
+                    "should make a call to"
+                },
+                self.target()
+            )
         }
     }
 }
@@ -105,7 +189,7 @@ impl GameMethods for Skat {
     fn players_to_move(&mut self, players: &mut Vec<player_id>) -> Result<()> {
         players.push(match self.state {
             GameState::Dealing => PLAYER_RAND,
-            GameState::Bidding => {
+            GameState::Bidding { bid, state } => {
                 // TODO
                 Player::Middlehand.into()
             }
@@ -122,7 +206,7 @@ impl GameMethods for Skat {
                     moves.push(OptCard::from(card).into())
                 }
             }
-            GameState::Bidding => todo!(),
+            GameState::Bidding { bid, state } => todo!(),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
         }
@@ -140,7 +224,7 @@ impl GameMethods for Skat {
                 let card: OptCard = string.parse()?;
                 card.into()
             }
-            GameState::Bidding => todo!(),
+            GameState::Bidding { bid, state } => todo!(),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
         })
@@ -157,7 +241,7 @@ impl GameMethods for Skat {
                 let card: OptCard = mov.md.try_into()?;
                 write!(str_buf, "{card}").expect("writing card action move failed");
             }
-            GameState::Bidding => todo!(),
+            GameState::Bidding { bid, state } => todo!(),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
         }
@@ -177,10 +261,13 @@ impl GameMethods for Skat {
                 let target = deal_to(dealt);
                 self.cards.give(target, card);
                 if usize::from(dealt) + 1 >= Card::COUNT {
-                    self.state = GameState::Bidding;
+                    self.state = GameState::Bidding {
+                        bid: GameState::MINIMUM_BID - 1,
+                        state: Default::default(),
+                    };
                 }
             }
-            GameState::Bidding => todo!(),
+            GameState::Bidding { bid, state } => todo!(),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
         }
@@ -215,7 +302,7 @@ impl GameMethods for Skat {
                     }
                 }
             }
-            GameState::Bidding => todo!(),
+            GameState::Bidding { bid, state } => todo!(),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
         }
@@ -265,7 +352,7 @@ impl GameMethods for Skat {
                     Ok(OptCard::Hidden.into())
                 }
             }
-            GameState::Bidding => todo!(),
+            GameState::Bidding { bid, state } => todo!(),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
         }
