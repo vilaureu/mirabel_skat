@@ -27,13 +27,17 @@ use crate::structures::OptCard;
 
 #[derive(Clone, Debug, Default)]
 enum GameState {
+    /// State while dealing cards.
     #[default]
     Dealing,
+    /// State of the bidding phase.
     Bidding {
         // FIXME: This could fit into 8 bytes when a offset is used.
         bid: u16,
         state: BiddingState,
     },
+    /// Single player is deciding whether to look at the Skat or not.
+    SkatDecision,
     Declaring,
     Playing,
     // FIXME: Replace with fixed-size array.
@@ -43,6 +47,14 @@ enum GameState {
 impl GameState {
     const MINIMUM_BID: u16 = 18;
     const MAXIMUM_BID: u16 = 264;
+
+    /// Does the game have a declarer at this stage.
+    fn has_declarer(&self) -> bool {
+        !matches!(
+            self,
+            GameState::Dealing | GameState::Bidding { bid: _, state: _ }
+        )
+    }
 }
 
 impl Display for GameState {
@@ -72,6 +84,7 @@ impl Display for GameState {
                     )
                 }
             }
+            GameState::SkatDecision => write!(f, "declarer deciding on picking the Skat"),
         }
     }
 }
@@ -192,9 +205,11 @@ enum BiddingResult {
     Draw,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct Skat {
     cards: CardStruct,
+    /// The one player playing against the rest.
+    declarer: Player,
     state: GameState,
 }
 
@@ -205,6 +220,17 @@ impl PartialEq for Skat {
 }
 
 impl Eq for Skat {}
+
+impl Default for Skat {
+    fn default() -> Self {
+        Self {
+            cards: Default::default(),
+            // This will be overridden in the bidding phase anyway.
+            declarer: Player::Forehand,
+            state: Default::default(),
+        }
+    }
+}
 
 impl GameMethods for Skat {
     type Move = MoveCode;
@@ -247,6 +273,7 @@ impl GameMethods for Skat {
         players.push(match self.state {
             GameState::Dealing => PLAYER_RAND,
             GameState::Bidding { bid: _, state } => state.source().into(),
+            GameState::SkatDecision => self.declarer.into(),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
@@ -275,6 +302,7 @@ impl GameMethods for Skat {
                     );
                 }
             }
+            GameState::SkatDecision => moves.extend_from_slice(&[0.into(), 1.into()]),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
@@ -310,6 +338,18 @@ impl GameMethods for Skat {
                     })
                 }
             }
+            GameState::SkatDecision => {
+                if string.eq_ignore_ascii_case("hand") {
+                    Ok(0.into())
+                } else if string.eq_ignore_ascii_case("pick") {
+                    Ok(1.into())
+                } else {
+                    Err(Error::new_static(
+                        ErrorCode::InvalidInput,
+                        "invalid Skat decision\0",
+                    ))
+                }
+            }
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
@@ -339,6 +379,8 @@ impl GameMethods for Skat {
                     write!(str_buf, "{}", mov.md)
                 }
             }
+            GameState::SkatDecision if mov.md == 0 => write!(str_buf, "Hand"),
+            GameState::SkatDecision => write!(str_buf, "pick"),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
@@ -378,10 +420,15 @@ impl GameMethods for Skat {
                 };
                 match next {
                     BiddingResult::Continue(s) => *state = s,
-                    BiddingResult::Finished(_) => todo!(),
+                    BiddingResult::Finished(p) => {
+                        self.declarer = p;
+                        self.state = GameState::SkatDecision
+                    }
                     BiddingResult::Draw => self.state = GameState::Finished(Default::default()),
                 }
             }
+            GameState::SkatDecision if mov.md == 0 => todo!(),
+            GameState::SkatDecision => todo!(),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
@@ -399,7 +446,7 @@ impl GameMethods for Skat {
         player: player_id,
         mov: MoveDataSync<<Self::Move as MoveData>::Rust<'_>>,
     ) -> Result<()> {
-        match &mut self.state {
+        match self.state {
             GameState::Dealing => {
                 if player != PLAYER_RAND {
                     return Err(Error::new_static(
@@ -432,10 +479,13 @@ impl GameMethods for Skat {
                         ));
                     }
                 } else if mov.md != 0
-                    && (mov.md <= (*bid).into() || mov.md > GameState::MAXIMUM_BID.into())
+                    && (mov.md <= bid.into() || mov.md > GameState::MAXIMUM_BID.into())
                 {
                     return Err(Error::new_static(ErrorCode::InvalidMove, "invalid bid\0"));
                 }
+            }
+            GameState::SkatDecision => {
+                // Any move code is legal.
             }
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
@@ -487,10 +537,7 @@ impl GameMethods for Skat {
                     Ok(OptCard::Hidden.into())
                 }
             }
-            GameState::Bidding { bid, state } => todo!(),
-            GameState::Declaring => todo!(),
-            GameState::Playing => todo!(),
-            GameState::Finished(_) => todo!(),
+            _ => Ok(mov.md.into()),
         }
     }
 
@@ -519,6 +566,9 @@ impl GameMethods for Skat {
 impl Display for Skat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{}", self.cards)?;
+        if self.state.has_declarer() {
+            writeln!(f, "{} is declarer", self.declarer)?;
+        }
         writeln!(f, "{}", self.state)
     }
 }
