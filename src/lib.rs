@@ -38,6 +38,10 @@ enum GameState {
     },
     /// Single player is deciding whether to look at the Skat or not.
     SkatDecision,
+    /// Single player is picking up the Skat.
+    ///
+    /// This is performed by [`PLAYER_RAND`].
+    Picking,
     Declaring,
     Playing,
     // FIXME: Replace with fixed-size array.
@@ -69,6 +73,8 @@ impl Display for GameState {
                 }
                 write!(f, "{state}")
             }
+            GameState::SkatDecision => write!(f, "declarer deciding on picking the Skat"),
+            GameState::Picking => write!(f, "declarer picking up the Skat"),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
             GameState::Finished(players) => {
@@ -84,7 +90,6 @@ impl Display for GameState {
                     )
                 }
             }
-            GameState::SkatDecision => write!(f, "declarer deciding on picking the Skat"),
         }
     }
 }
@@ -274,6 +279,7 @@ impl GameMethods for Skat {
             GameState::Dealing => PLAYER_RAND,
             GameState::Bidding { bid: _, state } => state.source().into(),
             GameState::SkatDecision => self.declarer.into(),
+            GameState::Picking => PLAYER_RAND,
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
@@ -283,11 +289,12 @@ impl GameMethods for Skat {
 
     fn get_concrete_moves(&mut self, player: player_id, moves: &mut Vec<Self::Move>) -> Result<()> {
         match self.state {
-            GameState::Dealing => {
-                for card in self.cards.iter_unknown() {
-                    moves.push(OptCard::from(card).into())
-                }
-            }
+            GameState::Dealing => moves.extend(
+                self.cards
+                    .iter_unknown()
+                    .map(|card| MoveCode::from(OptCard::from(card))),
+            ),
+
             GameState::Bidding { bid, state } => {
                 // 0 means passing.
                 moves.push(0.into());
@@ -303,6 +310,20 @@ impl GameMethods for Skat {
                 }
             }
             GameState::SkatDecision => moves.extend_from_slice(&[0.into(), 1.into()]),
+            GameState::Picking => match self.cards.skat.last() {
+                Some(OptCard::Known(card)) => moves.push(OptCard::from(*card).into()),
+                Some(OptCard::Hidden) => moves.extend(
+                    self.cards
+                        .iter_unknown()
+                        .map(|card| MoveCode::from(OptCard::from(card))),
+                ),
+                None => {
+                    return Err(Error::new_static(
+                        ErrorCode::InvalidState,
+                        "no card in the Skat to pick up\0",
+                    ))
+                }
+            },
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
@@ -318,7 +339,7 @@ impl GameMethods for Skat {
     fn get_move_data(&mut self, _player: player_id, string: &str) -> Result<Self::Move> {
         let string = string.trim();
         match self.state {
-            GameState::Dealing => {
+            GameState::Dealing | GameState::Picking => {
                 let card: OptCard = string.parse()?;
                 Ok(card.into())
             }
@@ -363,7 +384,7 @@ impl GameMethods for Skat {
         str_buf: &mut mirabel::ValidCString,
     ) -> Result<()> {
         match self.state {
-            GameState::Dealing => {
+            GameState::Dealing | GameState::Picking => {
                 let card: OptCard = mov.md.try_into()?;
                 write!(str_buf, "{card}")
             }
@@ -428,7 +449,16 @@ impl GameMethods for Skat {
                 }
             }
             GameState::SkatDecision if mov.md == 0 => todo!(),
-            GameState::SkatDecision => todo!(),
+            GameState::SkatDecision => self.state = GameState::Picking,
+            GameState::Picking => {
+                assert_eq!(PLAYER_RAND, player);
+                let card = mov.md.try_into()?;
+                self.cards.skat.pop();
+                self.cards.give(Some(self.declarer), card);
+                if self.cards.skat.is_empty() {
+                    self.state = GameState::Declaring;
+                }
+            }
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
@@ -487,6 +517,40 @@ impl GameMethods for Skat {
             GameState::SkatDecision => {
                 // Any move code is legal.
             }
+            GameState::Picking => {
+                if player != PLAYER_RAND {
+                    return Err(Error::new_static(
+                        ErrorCode::InvalidPlayer,
+                        "PLAYER_RAND must pick up Skat cards\0",
+                    ));
+                }
+                let Some(skat_card) = self.cards.skat.last() else {
+                    return Err(Error::new_static(
+                        ErrorCode::InvalidState,
+                        "no card in the Skat to pick up\0",
+                    ));
+                };
+                if let OptCard::Known(card) = mov.md.try_into()? {
+                    match skat_card {
+                        OptCard::Known(skat_card) => {
+                            if card != *skat_card {
+                                return Err(Error::new_static(
+                                    ErrorCode::InvalidMove,
+                                    "not the correct card to pick up\0",
+                                ));
+                            }
+                        }
+                        OptCard::Hidden => {
+                            if self.cards.iter().any(|c| c == card) {
+                                return Err(Error::new_static(
+                                    ErrorCode::InvalidMove,
+                                    "this card is already at another place\0",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
@@ -524,14 +588,20 @@ impl GameMethods for Skat {
             return Ok(mov.md.into());
         }
 
+        let target_player = Player::from(target_player);
         match self.state {
             GameState::Dealing => {
                 assert_eq!(PLAYER_RAND, player);
                 let target = deal_to(self.cards.count());
-                if target
-                    .filter(|&t| t == Player::from(target_player))
-                    .is_some()
-                {
+                if target.filter(|&t| t == target_player).is_some() {
+                    Ok(mov.md.into())
+                } else {
+                    Ok(OptCard::Hidden.into())
+                }
+            }
+            GameState::Picking => {
+                assert_eq!(PLAYER_RAND, player);
+                if self.declarer == target_player {
                     Ok(mov.md.into())
                 } else {
                     Ok(OptCard::Hidden.into())
