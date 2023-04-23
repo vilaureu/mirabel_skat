@@ -69,7 +69,7 @@ impl Display for Player {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub(crate) enum CardValue {
     Num7,
     Num8,
@@ -236,7 +236,7 @@ impl From<Card> for move_code {
     fn from(value: Card) -> Self {
         #[allow(clippy::assertions_on_constants)]
         const _: () = assert!(move_code::MAX == MOVE_NONE);
-        assert!(move_code::try_from(Card::COUNT).unwrap() <= move_code::MAX);
+        assert!(move_code::try_from(Card::COUNT).is_ok());
 
         value.index() as move_code
     }
@@ -321,6 +321,7 @@ impl From<OptCard> for move_code {
     ///         ╚ 1 if hidden
     /// ```
     fn from(value: OptCard) -> Self {
+        #[allow(clippy::assertions_on_constants)]
         const _: () = assert!(OptCard::BITS <= move_code::BITS);
 
         match value {
