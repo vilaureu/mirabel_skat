@@ -1,11 +1,11 @@
 use std::{
     fmt::{self, Display},
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut, Index, IndexMut},
     str::FromStr,
 };
 
 use mirabel::{
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, Result},
     game::{move_code, player_id, MoveCode, MOVE_NONE, PLAYER_NONE, PLAYER_RAND},
 };
 use nom::{
@@ -245,7 +245,7 @@ impl From<Card> for move_code {
 impl TryFrom<move_code> for Card {
     type Error = Error;
 
-    fn try_from(value: move_code) -> Result<Self, Self::Error> {
+    fn try_from(value: move_code) -> Result<Self> {
         usize::try_from(value)
             .ok()
             .and_then(|v| Card::all().get(v).cloned())
@@ -373,7 +373,7 @@ impl FromStr for OptCard {
 pub(crate) struct CardVec(Vec<OptCard>);
 
 impl CardVec {
-    fn iter_known(&self) -> impl Iterator<Item = Card> + '_ {
+    pub(crate) fn iter_known(&self) -> impl Iterator<Item = Card> + '_ {
         self.iter().cloned().flatten()
     }
 }
@@ -422,7 +422,7 @@ pub(crate) struct CardStruct {
 
 impl CardStruct {
     const HAND_SIZE: usize = 10;
-    const SKAT_SIZE: usize = 2;
+    pub(crate) const SKAT_SIZE: usize = 2;
     const TRICK_SIZE: usize = 3;
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = Card> + '_ {
@@ -456,6 +456,36 @@ impl CardStruct {
         }
     }
 
+    /// Take the `card` away from `player`.
+    ///
+    /// If the `card` is [`OptCard::Hidden`], it redacts the `player`s cards.
+    /// It then searches for the `card` in the `player`s hand and removes it.
+    /// If it was not found, it removes a hidden card or, if there is no hidden
+    /// card, it returns an error.
+    pub(crate) fn take(&mut self, player: Player, card: OptCard) -> Result<()> {
+        if matches!(card, OptCard::Hidden) {
+            for card in self[player].iter_mut() {
+                *card = OptCard::Hidden;
+            }
+        }
+        let index = match self[player].iter().enumerate().find(|(_, c)| **c == card) {
+            Some((i, _)) => i,
+            None => {
+                self[player]
+                    .iter()
+                    .enumerate()
+                    .find(|(_, c)| matches!(c, OptCard::Hidden))
+                    .ok_or(Error::new_static(
+                        ErrorCode::InvalidMove,
+                        "cannot take this card for this player\0",
+                    ))?
+                    .0
+            }
+        };
+        self[player].swap_remove(index);
+        Ok(())
+    }
+
     /// Count the number of managed cards.
     ///
     /// This is useful in the dealing phase to find the number of dealt cards.
@@ -473,9 +503,27 @@ impl CardStruct {
     /// `true`.
     pub(crate) fn redact(&mut self, keep: [bool; Player::COUNT]) {
         for (player, _) in keep.into_iter().enumerate().filter(|&(_, k)| !k) {
-            self.hands[player] = Default::default();
+            for card in self.hands[player].iter_mut() {
+                *card = OptCard::Hidden;
+            }
         }
-        self.skat = Default::default();
+        for card in self.skat.iter_mut() {
+            *card = OptCard::Hidden;
+        }
+    }
+}
+
+impl Index<Player> for CardStruct {
+    type Output = CardVec;
+
+    fn index(&self, player: Player) -> &Self::Output {
+        &self.hands[player as usize]
+    }
+}
+
+impl IndexMut<Player> for CardStruct {
+    fn index_mut(&mut self, player: Player) -> &mut Self::Output {
+        &mut self.hands[player as usize]
     }
 }
 
