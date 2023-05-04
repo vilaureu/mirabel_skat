@@ -32,8 +32,6 @@ enum GameState {
     Dealing,
     /// State of the bidding phase.
     Bidding {
-        // FIXME: This could fit into 8 bytes when a offset is used.
-        bid: u16,
         state: BiddingState,
     },
     /// Single player is deciding whether to look at the Skat or not.
@@ -51,15 +49,9 @@ enum GameState {
 }
 
 impl GameState {
-    const MINIMUM_BID: u16 = 18;
-    const MAXIMUM_BID: u16 = 264;
-
     /// Does the game have a declarer at this stage.
     fn has_declarer(&self) -> bool {
-        !matches!(
-            self,
-            GameState::Dealing | GameState::Bidding { bid: _, state: _ }
-        )
+        !matches!(self, GameState::Dealing | GameState::Bidding { state: _ })
     }
 }
 
@@ -67,13 +59,8 @@ impl Display for GameState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GameState::Dealing => write!(f, "dealing"),
-            GameState::Bidding { bid, state } => {
-                if *bid < Self::MINIMUM_BID {
-                    writeln!(f, "bidding just started")?;
-                } else {
-                    writeln!(f, "bidding at {bid}")?;
-                }
-                write!(f, "{state}")
+            GameState::Bidding { state } => {
+                write!(f, "bidding: {state}")
             }
             GameState::SkatDecision => write!(f, "declarer deciding on picking the Skat"),
             GameState::Picking => write!(f, "declarer picking up the Skat"),
@@ -216,9 +203,18 @@ enum BiddingResult {
 #[derive(Clone, Debug)]
 struct Skat {
     cards: CardStruct,
+    // FIXME: This could fit into 8 bytes when a offset is used.
+    bid: u16,
     /// The one player playing against the rest.
     declarer: Player,
+    // level: GameLevel,
+    // mode: GameMode,
     state: GameState,
+}
+
+impl Skat {
+    const MINIMUM_BID: u16 = 18;
+    const MAXIMUM_BID: u16 = 264;
 }
 
 impl PartialEq for Skat {
@@ -233,6 +229,7 @@ impl Default for Skat {
     fn default() -> Self {
         Self {
             cards: Default::default(),
+            bid: Self::MINIMUM_BID - 1,
             // This will be overridden in the bidding phase anyway.
             declarer: Player::Forehand,
             state: Default::default(),
@@ -280,7 +277,7 @@ impl GameMethods for Skat {
     fn players_to_move(&mut self, players: &mut Vec<player_id>) -> Result<()> {
         players.push(match self.state {
             GameState::Dealing | GameState::Picking => PLAYER_RAND,
-            GameState::Bidding { bid: _, state } => state.source().into(),
+            GameState::Bidding { state } => state.source().into(),
             GameState::SkatDecision | GameState::Putting => self.declarer.into(),
             GameState::Declaring => todo!(),
             GameState::Playing => todo!(),
@@ -296,7 +293,7 @@ impl GameMethods for Skat {
                     .iter_unknown()
                     .map(|card| MoveCode::from(OptCard::from(card))),
             ),
-            GameState::Bidding { bid, state } => {
+            GameState::Bidding { state } => {
                 // 0 means passing.
                 moves.push(0.into());
                 if state.respond() {
@@ -304,7 +301,7 @@ impl GameMethods for Skat {
                     moves.push(1.into());
                 } else {
                     moves.extend(
-                        (bid.saturating_add(1)..=GameState::MAXIMUM_BID)
+                        (self.bid.saturating_add(1)..=Self::MAXIMUM_BID)
                             .map(move_code::from)
                             .map(MoveCode::from),
                     );
@@ -358,7 +355,7 @@ impl GameMethods for Skat {
                 let card: OptCard = string.parse()?;
                 Ok(card.into())
             }
-            GameState::Bidding { bid: _, state: _ } => {
+            GameState::Bidding { state: _ } => {
                 if string.eq_ignore_ascii_case("pass") {
                     Ok(0.into())
                 } else if string.eq_ignore_ascii_case("accept")
@@ -403,9 +400,9 @@ impl GameMethods for Skat {
                 let card: OptCard = mov.md.try_into()?;
                 write!(str_buf, "{card}")
             }
-            GameState::Bidding { bid: _, state: _ } => {
+            GameState::Bidding { state: _ } => {
                 #[allow(clippy::assertions_on_constants)]
-                const _: () = assert!(1 < GameState::MAXIMUM_BID);
+                const _: () = assert!(1 < Skat::MAXIMUM_BID);
 
                 if mov.md == 0 {
                     write!(str_buf, "pass")
@@ -439,18 +436,17 @@ impl GameMethods for Skat {
                 self.cards.give(target, card);
                 if usize::from(dealt) + 1 >= Card::COUNT {
                     self.state = GameState::Bidding {
-                        bid: GameState::MINIMUM_BID - 1,
                         state: Default::default(),
                     };
                 }
             }
-            GameState::Bidding { bid, state } => {
-                let any_bid = *bid >= GameState::MINIMUM_BID;
+            GameState::Bidding { state } => {
+                let any_bid = self.bid >= Self::MINIMUM_BID;
                 let next = match mov.md {
                     0 => state.next(true, any_bid),
                     1 => state.next(false, any_bid),
                     m => {
-                        *bid = m.try_into().expect("bid overflowed");
+                        self.bid = m.try_into().expect("bid overflowed");
                         state.next(false, any_bid)
                     }
                 };
@@ -517,7 +513,7 @@ impl GameMethods for Skat {
                     }
                 }
             }
-            GameState::Bidding { bid, state } => {
+            GameState::Bidding { state } => {
                 if Player::try_from(player) != Ok(state.source()) {
                     return Err(Error::new_static(
                         ErrorCode::InvalidPlayer,
@@ -532,7 +528,7 @@ impl GameMethods for Skat {
                         ));
                     }
                 } else if mov.md != 0
-                    && (mov.md <= bid.into() || mov.md > GameState::MAXIMUM_BID.into())
+                    && (mov.md <= self.bid.into() || mov.md > Self::MAXIMUM_BID.into())
                 {
                     return Err(Error::new_static(ErrorCode::InvalidMove, "invalid bid\0"));
                 }
@@ -687,6 +683,9 @@ impl GameMethods for Skat {
 impl Display for Skat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{}", self.cards)?;
+        if self.bid >= Self::MINIMUM_BID {
+            writeln!(f, "highest bid: {}", self.bid)?;
+        }
         if self.state.has_declarer() {
             writeln!(f, "{} is declarer", self.declarer)?;
         }
