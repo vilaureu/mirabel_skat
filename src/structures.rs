@@ -97,6 +97,26 @@ impl CardValue {
         ]
     }
 
+    /// Returns the ordinal number of this card value in a regular game.
+    ///
+    /// Precisely, _Ace_ will be mapped to _0_, _10_  to _1_, and so on until
+    /// _7_ is mapped to _6_.
+    ///
+    /// # Panics
+    /// Panics if invoked on [`Self::Jack`].
+    const fn ordinal(&self) -> usize {
+        match self {
+            CardValue::Ace => 0,
+            CardValue::Num10 => 1,
+            CardValue::King => 2,
+            CardValue::Queen => 3,
+            CardValue::Num9 => 4,
+            CardValue::Num8 => 5,
+            CardValue::Num7 => 6,
+            CardValue::Jack => panic!("jacks are no regular values in a normal game"),
+        }
+    }
+
     /// Parses a card value.
     ///
     /// The input could be either `7`, `8`, `9`, `J`, `Q`, `K`, `10`, or `A`
@@ -588,7 +608,7 @@ impl Declaration {
     ///
     /// If `hand`, assume a _Hand_ game else assume otherwise.
     // FIXME: Replace with fixed-sized vector.
-    fn all(hand: bool) -> Vec<Self> {
+    pub(crate) fn all(hand: bool) -> Vec<Self> {
         let mut possibilities = if hand {
             vec![Self::NullHand, Self::NullOuvertHand]
         } else {
@@ -805,10 +825,7 @@ impl GameLevel {
     }
 
     fn is_hand(&self) -> bool {
-        match self {
-            GameLevel::Normal => false,
-            _ => true,
-        }
+        !matches!(self, GameLevel::Normal)
     }
 }
 
@@ -840,7 +857,7 @@ impl TryFrom<move_code> for GameLevel {
             2 => GameLevel::Schneider,
             3 => GameLevel::Schwarz,
             4 => GameLevel::Ouvert,
-            4.. => {
+            5.. => {
                 return Err(Error::new_static(
                     ErrorCode::InvalidMove,
                     "invalid game level\0",
@@ -854,10 +871,30 @@ impl TryFrom<move_code> for GameLevel {
 pub(crate) struct Matadors([u8; Suit::COUNT]);
 impl Matadors {
     pub(crate) fn from_cards(cards: impl Iterator<Item = Card>) -> Self {
-        let jacks = [false; Suit::COUNT];
-        let colors = [[false; CardValue::COUNT - 1]; Suit::COUNT];
+        let mut jacks = [false; Suit::COUNT];
+        let mut colors = [[false; CardValue::COUNT - 1]; Suit::COUNT];
 
-        
+        for Card(value, suit) in cards {
+            let idx = suit as usize;
+            if matches!(value, CardValue::Jack) {
+                jacks[idx] = true;
+            } else {
+                colors[idx][value.ordinal()] = true;
+            }
+        }
+
+        let with = jacks[0];
+        let mut matadors = [0; Suit::COUNT];
+        for (i, m) in matadors.iter_mut().enumerate() {
+            for &has in jacks.iter().chain(colors[i].iter()) {
+                if has == with {
+                    *m += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        Self(matadors)
     }
 }
 

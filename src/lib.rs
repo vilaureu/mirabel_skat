@@ -7,7 +7,7 @@ mod structures;
 
 use std::{
     fmt::{self, Display, Write},
-    vec, str::FromStr, intrinsics::unreachable,
+    vec,
 };
 
 use mirabel::{
@@ -21,7 +21,7 @@ use mirabel::{
     plugin_get_game_methods, MoveDataSync,
 };
 
-use structures::{Card, CardStruct, Declaration, Player, DeclarationMove, Matadors};
+use structures::{Card, CardStruct, Declaration, DeclarationMove, Matadors, Player};
 
 use crate::structures::OptCard;
 
@@ -222,14 +222,14 @@ impl Skat {
     /// Returns [`Node`] if any used cards are [`OptCard::Hidden`].
     fn matadors(&self) -> Option<Matadors> {
         // FIXME: Avoid allocation.
-        let mut cards = self.cards[self.declarer].clone();
+        let mut cards = (*self.cards[self.declarer]).clone();
         if !self.declaration.is_hand() {
             cards.extend_from_slice(&self.cards.skat);
         }
         if cards.iter().any(|c| matches!(c, OptCard::Hidden)) {
             return None;
         }
-        Ok(Matadors::from_cards(cards.into_iter().map(|c| match c {
+        Some(Matadors::from_cards(cards.into_iter().map(|c| match c {
             OptCard::Hidden => unreachable!(),
             OptCard::Known(c) => c,
         })))
@@ -407,7 +407,7 @@ impl GameMethods for Skat {
             GameState::Declaring => {
                 let declaration: DeclarationMove = string.parse()?;
                 Ok(declaration.into())
-            },
+            }
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
@@ -626,14 +626,32 @@ impl GameMethods for Skat {
                     }
                 }
             }
-            GameState::Declaring => {
-                let declaration : DeclarationMove = mov.md.try_into()?;
-                let matadors = self.matadors();
+            GameState::Declaring => 'b: {
+                let declaration: DeclarationMove = mov.md.try_into()?;
+                let Some(matadors) = self.matadors() else {break 'b;};
+
                 match declaration {
-                    DeclarationMove::Declare(declaration) => declaration.,
-                    DeclarationMove::Overbidden => todo!(),
+                    DeclarationMove::Declare(declaration) => {
+                        if !declaration.allowed(self.bid, &matadors) {
+                            return Err(Error::new_static(
+                                ErrorCode::InvalidMove,
+                                "declaration would lead to overbidding\0",
+                            ));
+                        }
+                    }
+                    DeclarationMove::Overbidden => {
+                        if Declaration::all(self.declaration.is_hand())
+                            .iter()
+                            .any(|d| d.allowed(self.bid, &matadors))
+                        {
+                            return Err(Error::new_static(
+                                ErrorCode::InvalidMove,
+                                "not actually overbidden\0",
+                            ));
+                        }
+                    }
                 }
-            },
+            }
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
