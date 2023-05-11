@@ -7,7 +7,7 @@ mod structures;
 
 use std::{
     fmt::{self, Display, Write},
-    vec,
+    vec, str::FromStr, intrinsics::unreachable,
 };
 
 use mirabel::{
@@ -21,7 +21,7 @@ use mirabel::{
     plugin_get_game_methods, MoveDataSync,
 };
 
-use structures::{Card, CardStruct, Player};
+use structures::{Card, CardStruct, Declaration, Player, DeclarationMove, Matadors};
 
 use crate::structures::OptCard;
 
@@ -65,7 +65,7 @@ impl Display for GameState {
             GameState::SkatDecision => write!(f, "declarer deciding on picking the Skat"),
             GameState::Picking => write!(f, "declarer picking up the Skat"),
             GameState::Putting => write!(f, "declarer putting back cards"),
-            GameState::Declaring => todo!(),
+            GameState::Declaring => write!(f, "declarer is declaring"),
             GameState::Playing => todo!(),
             GameState::Finished(players) => {
                 if players.is_empty() {
@@ -207,7 +207,7 @@ struct Skat {
     bid: u16,
     /// The one player playing against the rest.
     declarer: Player,
-    // level: GameLevel,
+    declaration: Declaration,
     // mode: GameMode,
     state: GameState,
 }
@@ -215,6 +215,25 @@ struct Skat {
 impl Skat {
     const MINIMUM_BID: u16 = 18;
     const MAXIMUM_BID: u16 = 264;
+
+    /// Calculate the (missing) matadors for the declarer.
+    ///
+    /// The Skat is only considered if the declaration is not a _Hand_ game.
+    /// Returns [`Node`] if any used cards are [`OptCard::Hidden`].
+    fn matadors(&self) -> Option<Matadors> {
+        // FIXME: Avoid allocation.
+        let mut cards = self.cards[self.declarer].clone();
+        if !self.declaration.is_hand() {
+            cards.extend_from_slice(&self.cards.skat);
+        }
+        if cards.iter().any(|c| matches!(c, OptCard::Hidden)) {
+            return None;
+        }
+        Ok(Matadors::from_cards(cards.into_iter().map(|c| match c {
+            OptCard::Hidden => unreachable!(),
+            OptCard::Known(c) => c,
+        })))
+    }
 }
 
 impl PartialEq for Skat {
@@ -232,6 +251,7 @@ impl Default for Skat {
             bid: Self::MINIMUM_BID - 1,
             // This will be overridden in the bidding phase anyway.
             declarer: Player::Forehand,
+            declaration: Default::default(),
             state: Default::default(),
         }
     }
@@ -278,8 +298,9 @@ impl GameMethods for Skat {
         players.push(match self.state {
             GameState::Dealing | GameState::Picking => PLAYER_RAND,
             GameState::Bidding { state } => state.source().into(),
-            GameState::SkatDecision | GameState::Putting => self.declarer.into(),
-            GameState::Declaring => todo!(),
+            GameState::SkatDecision | GameState::Putting | GameState::Declaring => {
+                self.declarer.into()
+            }
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         });
@@ -383,7 +404,10 @@ impl GameMethods for Skat {
                     ))
                 }
             }
-            GameState::Declaring => todo!(),
+            GameState::Declaring => {
+                let declaration: DeclarationMove = string.parse()?;
+                Ok(declaration.into())
+            },
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
@@ -459,7 +483,12 @@ impl GameMethods for Skat {
                     BiddingResult::Draw => self.state = GameState::Finished(Default::default()),
                 }
             }
-            GameState::SkatDecision if mov.md == 0 => todo!(),
+            GameState::SkatDecision if mov.md == 0 => {
+                // Change the game to a _Hand_ game to encode that the declarer
+                // is playing _Hand_.
+                self.declaration = Declaration::NullHand;
+                self.state = GameState::Declaring;
+            }
             GameState::SkatDecision => self.state = GameState::Picking,
             GameState::Picking => {
                 assert_eq!(PLAYER_RAND, player);
@@ -597,7 +626,14 @@ impl GameMethods for Skat {
                     }
                 }
             }
-            GameState::Declaring => todo!(),
+            GameState::Declaring => {
+                let declaration : DeclarationMove = mov.md.try_into()?;
+                let matadors = self.matadors();
+                match declaration {
+                    DeclarationMove::Declare(declaration) => declaration.,
+                    DeclarationMove::Overbidden => todo!(),
+                }
+            },
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }

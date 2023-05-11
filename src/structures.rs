@@ -11,10 +11,10 @@ use mirabel::{
 use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case},
-    character::complete::{char, space0},
-    combinator::{cut, eof, map, value},
+    character::complete::{char, space0, space1},
+    combinator::{cut, eof, map, opt, value},
     error::{context, convert_error, VerboseError},
-    sequence::{delimited, separated_pair, terminated},
+    sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
     Finish,
 };
 
@@ -148,6 +148,7 @@ pub(crate) enum Suit {
 impl Suit {
     // FIXME: Replace with std::mem::variant_count when stabilized.
     pub(crate) const COUNT: usize = 4;
+    const BITS: u32 = count_bits(Self::COUNT);
 
     pub(crate) const fn all() -> [Self; Self::COUNT] {
         [Self::Clubs, Self::Spades, Self::Hearts, Self::Diamonds]
@@ -191,7 +192,7 @@ pub(crate) struct Card(CardValue, Suit);
 impl Card {
     pub(crate) const COUNT: usize = Suit::COUNT * CardValue::COUNT;
     /// The number of bits needed to encode a [`Self`].
-    const BITS: u32 = (Self::COUNT - 1).ilog2() + 1;
+    const BITS: u32 = count_bits(Self::COUNT);
 
     pub(crate) const fn all() -> [Self; Self::COUNT] {
         let mut cards = [Self(CardValue::Num7, Suit::Clubs); Self::COUNT];
@@ -553,5 +554,410 @@ impl Display for CardStruct {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Default, Clone, Copy, Debug)]
+pub(crate) enum Declaration {
+    /// A normal game (i.e., not a _Null_ game)
+    ///
+    /// This set of states is encoded as:
+    /// ```text
+    /// HSB 0...01M...ML...L LSB
+    ///          ║║║║║║╚╩╩╩╩ GameLevel
+    ///          ║╚╩╩╩╩═════ NormalMode
+    ///          ╚══════════ Set for Normal variant
+    /// ```
+    Normal(NormalMode, GameLevel),
+    /// Default to a non-_Hand_ game.
+    #[default]
+    Null,
+    NullHand,
+    NullOuvert,
+    NullOuvertHand,
+}
+
+impl Declaration {
+    const BITS: u32 = max(NormalMode::BITS + GameLevel::BITS, 2) + 1;
+    const NULL: move_code = 0;
+    const NULL_HAND: move_code = 1;
+    const NULL_OUVERT: move_code = 2;
+    const NULL_OUVERT_HAND: move_code = 3;
+
+    /// List all possible declarations.
+    ///
+    /// If `hand`, assume a _Hand_ game else assume otherwise.
+    // FIXME: Replace with fixed-sized vector.
+    fn all(hand: bool) -> Vec<Self> {
+        let mut possibilities = if hand {
+            vec![Self::NullHand, Self::NullOuvertHand]
+        } else {
+            vec![Self::Null, Self::NullOuvert]
+        };
+        for mode in NormalMode::all() {
+            for &level in GameLevel::all(hand) {
+                possibilities.push(Self::Normal(mode, level));
+            }
+        }
+        possibilities
+    }
+
+    pub(crate) fn is_hand(&self) -> bool {
+        match self {
+            Declaration::Normal(_, l) => l.is_hand(),
+            Declaration::Null => false,
+            Declaration::NullHand => true,
+            Declaration::NullOuvert => false,
+            Declaration::NullOuvertHand => true,
+        }
+    }
+
+    /// Is this declaration allowed given the `bid` value and number of
+    /// `matadors`.
+    pub(crate) fn allowed(&self, bid: u16, matadors: &Matadors) -> bool {
+        match *self {
+            Declaration::Normal(mode, level) => {
+                // Add 2 for possibly playing Schneider and Schwarz.
+                bid <= (u16::from(matadors[mode]) + u16::from(level) + 2) * u16::from(mode)
+            }
+            Declaration::Null => bid <= 23,
+            Declaration::NullHand => bid <= 35,
+            Declaration::NullOuvert => bid <= 46,
+            Declaration::NullOuvertHand => bid <= 59,
+        }
+    }
+
+    pub(crate) fn parse(input: &str) -> IResult<&str, Self> {
+        context(
+            "declaration",
+            alt((
+                value(
+                    Self::NullOuvertHand,
+                    tuple((
+                        tag_no_case("null"),
+                        space1,
+                        tag_no_case("ouvert"),
+                        space1,
+                        tag_no_case("hand"),
+                    )),
+                ),
+                value(
+                    Self::NullOuvert,
+                    separated_pair(tag_no_case("null"), space1, tag_no_case("ouvert")),
+                ),
+                value(
+                    Self::NullHand,
+                    separated_pair(tag_no_case("null"), space1, tag_no_case("hand")),
+                ),
+                value(Self::Null, tag_no_case("null")),
+                map(
+                    pair(
+                        cut(NormalMode::parse),
+                        opt(preceded(
+                            space1,
+                            context(
+                                "level",
+                                alt((
+                                    value(GameLevel::Hand, tag_no_case("hand")),
+                                    value(GameLevel::Schneider, tag_no_case("schneider")),
+                                    value(GameLevel::Schwarz, tag_no_case("schwarz")),
+                                    value(GameLevel::Ouvert, tag_no_case("ouvert")),
+                                )),
+                            ),
+                        )),
+                    ),
+                    |(m, l)| Self::Normal(m, l.unwrap_or(GameLevel::Normal)),
+                ),
+            )),
+        )(input)
+    }
+}
+
+impl From<Declaration> for move_code {
+    fn from(value: Declaration) -> Self {
+        match value {
+            Declaration::Normal(mode, level) => {
+                (1 << (Declaration::BITS - 1))
+                    + (move_code::from(mode) << GameLevel::BITS)
+                    + move_code::from(level)
+            }
+            Declaration::Null => Declaration::NULL,
+            Declaration::NullHand => Declaration::NULL_HAND,
+            Declaration::NullOuvert => Declaration::NULL_OUVERT,
+            Declaration::NullOuvertHand => Declaration::NULL_OUVERT_HAND,
+        }
+    }
+}
+
+impl TryFrom<move_code> for Declaration {
+    type Error = Error;
+
+    fn try_from(value: move_code) -> std::result::Result<Self, Self::Error> {
+        Ok(match value {
+            Self::NULL => Self::Null,
+            Self::NULL_HAND => Self::NullHand,
+            Self::NULL_OUVERT => Self::NullOuvert,
+            Self::NULL_OUVERT_HAND => Self::NullOuvertHand,
+            _ => {
+                if value >> Declaration::BITS != 0 || value & (1 << (Declaration::BITS - 1)) == 0 {
+                    return Err(Error::new_static(
+                        ErrorCode::InvalidMove,
+                        "invalid declaration move\0",
+                    ));
+                }
+                let level_value = value & ((1 << GameLevel::BITS) - 1);
+                let mode_value = (value >> GameLevel::BITS) & ((1 << NormalMode::BITS) - 1);
+                Self::Normal(mode_value.try_into()?, level_value.try_into()?)
+            }
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NormalMode {
+    Color(Suit),
+    Grand,
+}
+
+impl NormalMode {
+    const BITS: u32 = Suit::BITS + 1;
+
+    const fn all() -> [Self; Suit::COUNT + 1] {
+        let mut result = [Self::Grand; Suit::COUNT + 1];
+        let mut i = 0;
+        while i < Suit::COUNT {
+            result[i] = Self::Color(Suit::all()[i]);
+            i += 1;
+        }
+        result[Suit::COUNT] = Self::Grand;
+        result
+    }
+
+    pub(crate) fn parse(input: &str) -> IResult<&str, Self> {
+        context(
+            "mode",
+            alt((
+                value(Self::Grand, tag_no_case("grand")),
+                value(Self::Color(Suit::Clubs), tag_no_case("clubs")),
+                value(Self::Color(Suit::Spades), tag_no_case("spades")),
+                value(Self::Color(Suit::Hearts), tag_no_case("hearts")),
+                value(Self::Color(Suit::Diamonds), tag_no_case("diamonds")),
+            )),
+        )(input)
+    }
+}
+
+impl From<NormalMode> for u16 {
+    fn from(value: NormalMode) -> Self {
+        match value {
+            NormalMode::Color(Suit::Diamonds) => 9,
+            NormalMode::Color(Suit::Hearts) => 10,
+            NormalMode::Color(Suit::Spades) => 11,
+            NormalMode::Color(Suit::Clubs) => 12,
+            NormalMode::Grand => 24,
+        }
+    }
+}
+
+impl From<NormalMode> for move_code {
+    fn from(value: NormalMode) -> Self {
+        match value {
+            NormalMode::Color(suit) => suit as move_code,
+            NormalMode::Grand => 1 << Suit::BITS,
+        }
+    }
+}
+
+impl TryFrom<move_code> for NormalMode {
+    type Error = Error;
+
+    fn try_from(value: move_code) -> std::result::Result<Self, Self::Error> {
+        usize::try_from(value)
+            .ok()
+            .and_then(|index| Self::all().get(index).cloned())
+            .ok_or(Error::new_static(
+                ErrorCode::InvalidMove,
+                "invalid normal game mode\0",
+            ))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GameLevel {
+    Normal,
+    Hand,
+    Schneider,
+    Schwarz,
+    Ouvert,
+}
+
+impl GameLevel {
+    // FIXME: Replace with std::mem::variant_count when stabilized.
+    const COUNT: usize = 5;
+    const BITS: u32 = count_bits(Self::COUNT);
+
+    const fn all(hand: bool) -> &'static [Self] {
+        if hand {
+            &[Self::Hand, Self::Schneider, Self::Schwarz, Self::Ouvert]
+        } else {
+            &[Self::Normal]
+        }
+    }
+
+    fn is_hand(&self) -> bool {
+        match self {
+            GameLevel::Normal => false,
+            _ => true,
+        }
+    }
+}
+
+impl From<GameLevel> for u16 {
+    fn from(value: GameLevel) -> Self {
+        match value {
+            GameLevel::Normal => 1,
+            GameLevel::Hand => 2,
+            GameLevel::Schneider => 3,
+            GameLevel::Schwarz => 4,
+            GameLevel::Ouvert => 5,
+        }
+    }
+}
+
+impl From<GameLevel> for move_code {
+    fn from(value: GameLevel) -> Self {
+        value as move_code
+    }
+}
+
+impl TryFrom<move_code> for GameLevel {
+    type Error = Error;
+
+    fn try_from(value: move_code) -> std::result::Result<Self, Self::Error> {
+        Ok(match value {
+            0 => GameLevel::Normal,
+            1 => GameLevel::Hand,
+            2 => GameLevel::Schneider,
+            3 => GameLevel::Schwarz,
+            4 => GameLevel::Ouvert,
+            4.. => {
+                return Err(Error::new_static(
+                    ErrorCode::InvalidMove,
+                    "invalid game level\0",
+                ))
+            }
+        })
+    }
+}
+
+/// Count of the (missing) matadors per suit.
+pub(crate) struct Matadors([u8; Suit::COUNT]);
+impl Matadors {
+    pub(crate) fn from_cards(cards: impl Iterator<Item = Card>) -> Self {
+        let jacks = [false; Suit::COUNT];
+        let colors = [[false; CardValue::COUNT - 1]; Suit::COUNT];
+
+        
+    }
+}
+
+impl Index<NormalMode> for Matadors {
+    type Output = u8;
+
+    fn index(&self, index: NormalMode) -> &Self::Output {
+        match index {
+            NormalMode::Color(suit) => &self.0[suit as usize],
+            NormalMode::Grand => self.0.iter().min().unwrap().min(&(Suit::COUNT as u8)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DeclarationMove {
+    Declare(Declaration),
+    Overbidden,
+}
+
+impl DeclarationMove {
+    const OVERBIDDEN: move_code = 1 << Declaration::BITS;
+
+    /// Parse a declaration move from string.
+    ///
+    /// # Examples
+    /// These moves can be parsed: `cLubs`, `null  Ouvert hand`,
+    /// `grand sChWaRz`, `overbidden`.
+    /// However, these do not parse: `null hand ouvert`, `grand offen`.
+    pub(crate) fn parse(input: &str) -> IResult<&str, Self> {
+        context(
+            "declaration move",
+            alt((
+                value(Self::Overbidden, tag_no_case("overbidden")),
+                map(Declaration::parse, Self::Declare),
+            )),
+        )(input)
+    }
+}
+
+impl From<DeclarationMove> for move_code {
+    fn from(value: DeclarationMove) -> Self {
+        #[allow(clippy::assertions_on_constants)]
+        const _: () = assert!(Declaration::BITS < move_code::BITS);
+
+        match value {
+            DeclarationMove::Declare(d) => d.into(),
+            DeclarationMove::Overbidden => DeclarationMove::OVERBIDDEN,
+        }
+    }
+}
+
+impl From<DeclarationMove> for MoveCode {
+    fn from(value: DeclarationMove) -> Self {
+        move_code::from(value).into()
+    }
+}
+
+impl TryFrom<move_code> for DeclarationMove {
+    type Error = Error;
+
+    fn try_from(value: move_code) -> std::result::Result<Self, Self::Error> {
+        Ok(match value {
+            Self::OVERBIDDEN => Self::Overbidden,
+            _ => Self::Declare(value.try_into()?),
+        })
+    }
+}
+
+impl FromStr for DeclarationMove {
+    type Err = Error;
+
+    /// Parses into a [`Self`] like [`Self::parse()`] but with trimming.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(
+            terminated(delimited(space0, DeclarationMove::parse, space0), eof)(s)
+                .finish()
+                .map_err(|e| {
+                    Error::new_dynamic(
+                        ErrorCode::InvalidInput,
+                        format!("failed to parse declaration:\n{}", convert_error(s, e)),
+                    )
+                })?
+                .1,
+        )
+    }
+}
+
+/// Returns the number of bits required to represent `count` states.
+///
+/// # Panics
+/// Panics in debug mode if count is zero.
+const fn count_bits(count: usize) -> u32 {
+    (count - 1).ilog2() + 1
+}
+
+const fn max(a: u32, b: u32) -> u32 {
+    if a < b {
+        b
+    } else {
+        a
     }
 }
