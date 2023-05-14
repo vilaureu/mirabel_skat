@@ -33,6 +33,21 @@ impl Player {
     const fn all() -> [Self; Self::COUNT] {
         [Self::Forehand, Self::Middlehand, Self::Rearhand]
     }
+
+    /// Return the other two players.
+    pub const fn others(&self) -> [Self; Self::COUNT - 1] {
+        let all = Self::all();
+        let mut others = [Self::Forehand; Self::COUNT - 1];
+        let (mut a, mut o) = (0, 0);
+        while a < Self::COUNT {
+            if *self as usize != all[a] as usize {
+                others[o] = all[a];
+                o += 1;
+            }
+            a += 1;
+        }
+        others
+    }
 }
 
 impl From<player_id> for Player {
@@ -632,6 +647,15 @@ impl Declaration {
         }
     }
 
+    pub(crate) fn is_ouvert(&self) -> bool {
+        matches!(
+            self,
+            Declaration::Normal(_, GameLevel::Ouvert)
+                | Declaration::NullOuvert
+                | Declaration::NullOuvertHand,
+        )
+    }
+
     /// Is this declaration allowed given the `bid` value and number of
     /// `matadors`.
     pub(crate) fn allowed(&self, bid: u16, matadors: &Matadors) -> bool {
@@ -733,6 +757,27 @@ impl TryFrom<move_code> for Declaration {
     }
 }
 
+impl Display for Declaration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Declaration::Normal(m, l) => {
+                write!(f, "{m}")?;
+                match l {
+                    GameLevel::Normal => Ok(()),
+                    GameLevel::Hand => write!(f, " Hand"),
+                    GameLevel::Schneider => write!(f, " Schneider"),
+                    GameLevel::Schwarz => write!(f, " Schwarz"),
+                    GameLevel::Ouvert => write!(f, " Ouvert"),
+                }
+            }
+            Declaration::Null => write!(f, "Null"),
+            Declaration::NullHand => write!(f, "Null Hand"),
+            Declaration::NullOuvert => write!(f, "Null Ouvert"),
+            Declaration::NullOuvertHand => write!(f, "Null Ouvert Hand"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum NormalMode {
     Color(Suit),
@@ -799,6 +844,18 @@ impl TryFrom<move_code> for NormalMode {
                 ErrorCode::InvalidMove,
                 "invalid normal game mode\0",
             ))
+    }
+}
+
+impl Display for NormalMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NormalMode::Color(Suit::Clubs) => write!(f, "clubs"),
+            NormalMode::Color(Suit::Spades) => write!(f, "spades"),
+            NormalMode::Color(Suit::Hearts) => write!(f, "hearts"),
+            NormalMode::Color(Suit::Diamonds) => write!(f, "diamonds"),
+            NormalMode::Grand => write!(f, "grand"),
+        }
     }
 }
 
@@ -980,6 +1037,15 @@ impl FromStr for DeclarationMove {
                 })?
                 .1,
         )
+    }
+}
+
+impl Display for DeclarationMove {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeclarationMove::Declare(declaration) => declaration.fmt(f),
+            DeclarationMove::Overbidden => write!(f, "overbidden"),
+        }
     }
 }
 

@@ -53,6 +53,17 @@ impl GameState {
     fn has_declarer(&self) -> bool {
         !matches!(self, GameState::Dealing | GameState::Bidding { state: _ })
     }
+
+    fn has_declaration(&self) -> bool {
+        self.has_declarer()
+            && !matches!(
+                self,
+                GameState::SkatDecision
+                    | GameState::Picking
+                    | GameState::Putting
+                    | GameState::Declaring
+            )
+    }
 }
 
 impl Display for GameState {
@@ -357,7 +368,23 @@ impl GameMethods for Skat {
                     )
                 }
             }
-            GameState::Declaring => todo!(),
+            GameState::Declaring => {
+                let matadors = self.matadors();
+                moves.extend(
+                    Declaration::all(self.declaration.is_hand())
+                        .into_iter()
+                        .filter(|d| {
+                            matadors
+                                .as_ref()
+                                .filter(|m| d.allowed(self.bid, m))
+                                .is_some()
+                        })
+                        .map(|d| MoveCode::from(DeclarationMove::Declare(d))),
+                );
+                if moves.is_empty() {
+                    moves.push(DeclarationMove::Overbidden.into());
+                }
+            }
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
@@ -438,7 +465,10 @@ impl GameMethods for Skat {
             }
             GameState::SkatDecision if mov.md == 0 => write!(str_buf, "Hand"),
             GameState::SkatDecision => write!(str_buf, "pick"),
-            GameState::Declaring => todo!(),
+            GameState::Declaring => {
+                let declaration: DeclarationMove = mov.md.try_into()?;
+                write!(str_buf, "{declaration}")
+            }
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
@@ -507,7 +537,22 @@ impl GameMethods for Skat {
                     self.state = GameState::Declaring;
                 }
             }
-            GameState::Declaring => todo!(),
+            GameState::Declaring => {
+                let declaration: DeclarationMove = mov.md.try_into()?;
+                match declaration {
+                    DeclarationMove::Declare(declaration) => {
+                        self.declaration = declaration;
+                        self.state = if declaration.is_ouvert() {
+                            todo!()
+                        } else {
+                            GameState::Playing
+                        };
+                    }
+                    DeclarationMove::Overbidden => {
+                        self.state = GameState::Finished(self.declarer.others().to_vec())
+                    }
+                }
+            }
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
@@ -632,6 +677,16 @@ impl GameMethods for Skat {
 
                 match declaration {
                     DeclarationMove::Declare(declaration) => {
+                        if declaration.is_hand() != self.declaration.is_hand() {
+                            return Err(Error::new_static(
+                                ErrorCode::InvalidMove,
+                                if declaration.is_hand() {
+                                    "cannot declare Hand after picking up Skat\0"
+                                } else {
+                                    "you must declare a Hand game\0"
+                                },
+                            ));
+                        }
                         if !declaration.allowed(self.bid, &matadors) {
                             return Err(Error::new_static(
                                 ErrorCode::InvalidMove,
@@ -742,6 +797,11 @@ impl Display for Skat {
         }
         if self.state.has_declarer() {
             writeln!(f, "{} is declarer", self.declarer)?;
+        }
+        if self.state.has_declaration() {
+            writeln!(f, "playing {}", self.declaration)?;
+        } else if self.declaration.is_hand() {
+            writeln!(f, "going to be a Hand game")?;
         }
         writeln!(f, "{}", self.state)
     }
