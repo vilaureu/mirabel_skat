@@ -1,0 +1,73 @@
+#!/usr/bin/expect
+
+# This script plays through a regular game with hidden information.
+# Also see common.expect
+
+# Assumed card distribution:
+# forehand: 9H 10H 8S JH JS 10D QS QH 7C 7S
+# middlehand: 9D AS JD KD QC 8C 10S 10C 8D AC
+# rearhand: JC KS KH AH QD AD 9C KC 8H 9S
+# Skat: 7H 7D
+# This game is played from the perspective of middlehand who becomes declarer.
+
+source ./tests/common.expect
+
+print
+
+pov 255
+foreach c {? ? ? 9D AS JD ? ? ? ? ? ? ? ? ? KD QC 8C 10S ? ? ? ? ? ? ? 10C 8D AC ? ? ?} {
+    psend "$c"
+}
+
+pov 2
+print
+
+psend 18
+
+print
+
+pov 1
+psend accept
+
+pov 2
+psend 18
+
+psend 20
+
+print
+
+pov 1
+psend pass
+
+pov 3
+psend 48
+
+pov 2
+psend accept
+
+pov 3
+psend pass
+
+print
+
+pov 1
+psend pick
+
+print
+
+pov 255
+psend 7H
+psend 7D
+
+pov 1
+print
+
+psend 7C
+psend 7H
+psend KD
+print
+
+psend clubs
+print
+
+psend /exit

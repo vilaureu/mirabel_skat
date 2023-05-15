@@ -1,0 +1,25 @@
+#!/usr/bin/expect
+
+# This script provokes a draw by all players declining to bid.
+# Also see common.expect
+
+source ./tests/common.expect
+
+psend /resolve_random
+
+print
+
+pov 2
+psend pass
+
+pov 3
+psend pass
+
+pov 1
+psend pass
+
+print
+
+psend /get_results
+
+psend /exit

@@ -1,0 +1,41 @@
+#!/usr/bin/expect
+
+# This is the common script included by the other integration tests.
+# It provides common methods and starts up the initial game.
+# For this, it needs the path to the surena executable provided in the SURENA
+# environment variable.
+
+# Expect the surena prompt.
+proc prompt {} {
+    expect -re ".*\\(.*\\)>"
+}
+
+# Send print command.
+proc print {} {
+    prompt
+    send "/print\r"
+}
+
+# Change POV.
+proc pov {id} {
+    prompt
+    send "/pov $id\r"
+}
+
+# Send arbitrary input.
+proc psend {input} {
+    prompt
+    send "$input\r"
+}
+
+set target "[file normalize "[file dirname "[info script]"]/../target"]"
+
+if {[info exists env(SURENA)] == 0} {
+    puts stderr "Missing SURENA environment variable with path to surena executable."
+    exit 2
+}
+
+spawn "$env(SURENA)" repl
+
+psend "/load_plugin $target/debug/libmirabel_skat.so"
+psend "/create def"
