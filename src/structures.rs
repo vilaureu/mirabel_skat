@@ -310,6 +310,12 @@ impl From<Card> for move_code {
     }
 }
 
+impl From<Card> for MoveCode {
+    fn from(value: Card) -> Self {
+        move_code::from(value).into()
+    }
+}
+
 impl TryFrom<move_code> for Card {
     type Error = Error;
 
@@ -320,6 +326,23 @@ impl TryFrom<move_code> for Card {
             .ok_or_else(|| {
                 Error::new_static(ErrorCode::InvalidMove, "card value in move too high\0")
             })
+    }
+}
+
+impl FromStr for Card {
+    type Err = Error;
+
+    /// Parses into a [`Self`] like [`Self::parse()`] but with trimming.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(terminated(delimited(space0, Card::parse, space0), eof)(s)
+            .finish()
+            .map_err(|e| {
+                Error::new_dynamic(
+                    ErrorCode::InvalidInput,
+                    format!("failed to parse card:\n{}", convert_error(s, e)),
+                )
+            })?
+            .1)
     }
 }
 

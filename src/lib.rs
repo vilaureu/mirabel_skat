@@ -43,6 +43,10 @@ enum GameState {
     /// Single player is putting back cards.
     Putting,
     Declaring,
+    /// Single player is revealing their cards.
+    ///
+    /// Stores the index of the next card to reveal.
+    Revealing(usize),
     Playing,
     // FIXME: Replace with fixed-size array.
     Finished(Vec<Player>),
@@ -80,6 +84,7 @@ impl Display for GameState {
             GameState::Picking => write!(f, "declarer picking up the Skat"),
             GameState::Putting => write!(f, "declarer putting back cards"),
             GameState::Declaring => write!(f, "declarer is declaring"),
+            GameState::Revealing(i) => write!(f, "declarer is revealing card {i} next"),
             GameState::Playing => todo!(),
             GameState::Finished(players) => {
                 if players.is_empty() {
@@ -319,7 +324,7 @@ impl GameMethods for Skat {
 
     fn players_to_move(&mut self, players: &mut Vec<player_id>) -> Result<()> {
         players.push(match self.state {
-            GameState::Dealing | GameState::Picking => PLAYER_RAND,
+            GameState::Dealing | GameState::Picking | GameState::Revealing(_) => PLAYER_RAND,
             GameState::Bidding { state } => state.source().into(),
             GameState::SkatDecision | GameState::Putting | GameState::Declaring => {
                 self.declarer.into()
@@ -397,6 +402,17 @@ impl GameMethods for Skat {
                     moves.push(DeclarationMove::Overbidden.into());
                 }
             }
+            GameState::Revealing(i) => {
+                let card = self.cards[self.declarer]
+                    .get(i)
+                    .ok_or_else(|| reveal_error(i))?;
+                match *card {
+                    OptCard::Known(c) => moves.push(c.into()),
+                    OptCard::Hidden => {
+                        moves.extend(self.cards.iter_unknown().map(Into::<MoveCode>::into))
+                    }
+                }
+            }
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
@@ -447,6 +463,10 @@ impl GameMethods for Skat {
                 let declaration: DeclarationMove = string.parse()?;
                 Ok(declaration.into())
             }
+            GameState::Revealing(_) => {
+                let card: Card = string.parse()?;
+                Ok(card.into())
+            }
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
@@ -480,6 +500,10 @@ impl GameMethods for Skat {
             GameState::Declaring => {
                 let declaration: DeclarationMove = mov.md.try_into()?;
                 write!(str_buf, "{declaration}")
+            }
+            GameState::Revealing(_) => {
+                let card: Card = mov.md.try_into()?;
+                write!(str_buf, "{card}")
             }
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
@@ -555,7 +579,9 @@ impl GameMethods for Skat {
                     DeclarationMove::Declare(declaration) => {
                         self.declaration = declaration;
                         self.state = if declaration.is_ouvert() {
-                            todo!()
+                            // This assumes that the declarer has at least one
+                            // card.
+                            GameState::Revealing(0)
                         } else {
                             GameState::Playing
                         };
@@ -563,6 +589,15 @@ impl GameMethods for Skat {
                     DeclarationMove::Overbidden => {
                         self.state = GameState::Finished(self.declarer.others().to_vec())
                     }
+                }
+            }
+            GameState::Revealing(i) => {
+                let card: Card = mov.md.try_into()?;
+                let hand = &mut self.cards[self.declarer];
+                *hand.get_mut(*i).ok_or_else(|| reveal_error(*i))? = OptCard::Known(card);
+                *i += 1;
+                if *i >= hand.len() {
+                    self.state = GameState::Playing
                 }
             }
             GameState::Playing => todo!(),
@@ -719,6 +754,30 @@ impl GameMethods for Skat {
                     }
                 }
             }
+            GameState::Revealing(i) => {
+                let card: Card = mov.md.try_into()?;
+                let target = self.cards[self.declarer]
+                    .get(i)
+                    .ok_or_else(|| reveal_error(i))?;
+                match target {
+                    OptCard::Hidden => {
+                        if self.cards.iter().any(|c| c == card) {
+                            return Err(Error::new_static(
+                                ErrorCode::InvalidMove,
+                                "this card is already at another place\0",
+                            ));
+                        }
+                    }
+                    OptCard::Known(t) => {
+                        if &card != t {
+                            return Err(Error::new_static(
+                                ErrorCode::InvalidMove,
+                                "not the correct card for this index\0",
+                            ));
+                        }
+                    }
+                }
+            }
             GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
@@ -836,6 +895,14 @@ fn deal_to(dealt: u8) -> Option<Player> {
         9..=10 => None,
         32.. => panic!("dealt too many cards"),
     }
+}
+
+/// Returns an error that the card i cannot be revealed as it does not exist.
+fn reveal_error(i: usize) -> Error {
+    Error::new_dynamic(
+        ErrorCode::InvalidState,
+        format!("cannot reveal card {i} as it does not exist"),
+    )
 }
 
 fn generate_metadata() -> Metadata {

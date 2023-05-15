@@ -1,0 +1,55 @@
+#!/usr/bin/expect
+
+# This script plays through a Null Ouvert Hand game with hidden information.
+# Also see common.expect
+
+# Assumed card distribution:
+# forehand: AC AS 10S KS 9S 8S QH 7H QD 8D
+# middlehand: JC JS JH KC QS AH 10H 9H AD KD
+# rearhand: QC 9C 8C 7C 7S KH 8H 10D 9D 7D
+# Skat: JD 10C
+# This game is played from the perspective of rearhand and forehand becomes
+# declarer.
+
+source ./tests/common.expect
+
+print
+
+pov 255
+foreach c {? ? ? ? ? ? QC 9C 8C ? ? ? ? ? ? ? ? ? ? 7C 7S KH 8H ? ? ? ? ? ? 10D 9D 7D} {
+    psend "$c"
+}
+
+pov 2
+print
+
+psend pass
+
+pov 3
+psend 59
+
+pov 1
+psend accept
+
+pov 3
+psend pass
+print
+
+pov 1
+psend Hand
+print
+
+psend "\"Null Ouvert Hand\""
+print
+
+pov 255
+psend /get_concrete_moves
+
+foreach c {AC AS 10S KS 9S 9C 8S QH 7H QD 8D} {
+    psend "$c"
+}
+
+pov 1
+print
+
+psend /exit
