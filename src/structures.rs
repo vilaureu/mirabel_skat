@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     fmt::{self, Display},
     ops::{Deref, DerefMut, Index, IndexMut},
     str::FromStr,
@@ -84,16 +85,20 @@ impl Display for Player {
     }
 }
 
+/// The value of cards.
+///
+/// [`Ord`] follows the ordering of a Null game with [`Self::Ace`] being the
+/// lowest.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub(crate) enum CardValue {
-    Num7,
-    Num8,
-    Num9,
-    Jack,
-    Queen,
-    King,
-    Num10,
     Ace,
+    King,
+    Queen,
+    Jack,
+    Num10,
+    Num9,
+    Num8,
+    Num7,
 }
 
 impl CardValue {
@@ -172,7 +177,7 @@ impl Display for CardValue {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub(crate) enum Suit {
     Clubs,
     Spades,
@@ -259,6 +264,33 @@ impl Card {
             ),
         )(input)
     }
+
+    /// Orders the cards with the jack of clubs being the lowest.
+    fn cmp(&self, other: &Card) -> Ordering {
+        let self_jack = matches!(self.0, CardValue::Jack);
+        let other_jack = matches!(other.0, CardValue::Jack);
+        if self_jack && other_jack {
+            self.1.cmp(&other.1)
+        } else if self_jack && !other_jack {
+            Ordering::Less
+        } else if !self_jack && other_jack {
+            Ordering::Greater
+        } else if matches!(self.1.cmp(&other.1), Ordering::Equal) {
+            self.0.ordinal().cmp(&other.0.ordinal())
+        } else {
+            self.1.cmp(&other.1)
+        }
+    }
+
+    /// Sort according to a Null game with the ace of clubs being the lowest.
+    fn cmp_null(&self, other: &Card) -> Ordering {
+        let ordering_suit = self.1.cmp(&other.1);
+        if matches!(ordering_suit, Ordering::Equal) {
+            self.0.cmp(&other.0)
+        } else {
+            ordering_suit
+        }
+    }
 }
 
 impl Display for Card {
@@ -318,6 +350,24 @@ impl OptCard {
         match self {
             OptCard::Hidden => None,
             OptCard::Known(card) => Some(card),
+        }
+    }
+
+    /// Sorts with hidden cards have the highest value.
+    ///
+    /// See [`Card::cmp()`].
+    fn cmp(&self, other: &Self, null: bool) -> Ordering {
+        match (self, other) {
+            (OptCard::Known(s), OptCard::Known(o)) => {
+                if null {
+                    s.cmp_null(o)
+                } else {
+                    s.cmp(o)
+                }
+            }
+            (OptCard::Hidden, OptCard::Known(_)) => Ordering::Greater,
+            (OptCard::Known(_), OptCard::Hidden) => Ordering::Less,
+            (OptCard::Hidden, OptCard::Hidden) => Ordering::Equal,
         }
     }
 }
@@ -411,6 +461,11 @@ pub(crate) struct CardVec(Vec<OptCard>);
 impl CardVec {
     pub(crate) fn iter_known(&self) -> impl Iterator<Item = Card> + '_ {
         self.iter().cloned().flatten()
+    }
+
+    /// Sort in-place respecting whether this is a Null game or not.
+    fn sort(&mut self, null: bool) {
+        self.sort_by(|a, b| a.cmp(b, null));
     }
 }
 
@@ -546,6 +601,16 @@ impl CardStruct {
         for card in self.skat.iter_mut() {
             *card = OptCard::Hidden;
         }
+    }
+
+    /// Sort cards in-place.
+    ///
+    /// `null` specified whether to sort for a Null game or for a normal game.
+    pub(crate) fn sort(&mut self, null: bool) {
+        for hand in self.hands.iter_mut() {
+            hand.sort(null);
+        }
+        self.skat.sort(null);
     }
 }
 
@@ -714,6 +779,10 @@ impl Declaration {
                 ),
             )),
         )(input)
+    }
+
+    pub(crate) fn is_null(&self) -> bool {
+        !matches!(self, Self::Normal(_, _))
     }
 }
 

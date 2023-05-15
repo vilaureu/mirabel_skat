@@ -51,7 +51,10 @@ enum GameState {
 impl GameState {
     /// Does the game have a declarer at this stage.
     fn has_declarer(&self) -> bool {
-        !matches!(self, GameState::Dealing | GameState::Bidding { state: _ })
+        !matches!(
+            self,
+            GameState::Dealing | GameState::Bidding { state: _ } | GameState::Finished(_)
+        )
     }
 
     fn has_declaration(&self) -> bool {
@@ -244,6 +247,15 @@ impl Skat {
             OptCard::Hidden => unreachable!(),
             OptCard::Known(c) => c,
         })))
+    }
+
+    /// Return the declaration if [`GameState::has_declaration()`] is `true`.
+    fn declaration(&self) -> Option<Declaration> {
+        if self.state.has_declaration() {
+            Some(self.declaration)
+        } else {
+            None
+        }
     }
 }
 
@@ -791,7 +803,9 @@ impl GameMethods for Skat {
 
 impl Display for Skat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{}", self.cards)?;
+        let mut cards = self.cards.clone();
+        cards.sort(self.declaration().filter(|d| d.is_null()).is_some());
+        writeln!(f, "{}", cards)?;
         if self.bid >= Self::MINIMUM_BID {
             writeln!(f, "highest bid: {}", self.bid)?;
         }
