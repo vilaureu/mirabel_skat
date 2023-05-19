@@ -291,6 +291,14 @@ impl Card {
             ordering_suit
         }
     }
+
+    fn trump_suit(&self, declaration: Declaration) -> TrumpSuit {
+        match declaration {
+            Declaration::Normal(_, _) if matches!(self.0, CardValue::Jack) => TrumpSuit::Trump,
+            Declaration::Normal(NormalMode::Color(suit), _) if suit == self.1 => TrumpSuit::Trump,
+            _ => TrumpSuit::Color(self.1),
+        }
+    }
 }
 
 impl Display for Card {
@@ -634,6 +642,30 @@ impl CardStruct {
             hand.sort(null);
         }
         self.skat.sort(null);
+    }
+
+    /// Returns the [`Card`]s the [`Player`] is allowed to play.
+    ///
+    /// It considers the first card in the current trick if any.
+    /// If any card of the player is unknown, this returns a list of their known
+    /// cards and all unknown ones.
+    pub(crate) fn allowed(&self, player: Player, declaration: Declaration) -> Vec<Card> {
+        let hand = self[player];
+        let mut allowed = Vec::with_capacity(hand.len());
+        for card in hand.iter() {
+            match card {
+                OptCard::Hidden => return hand.iter_known().chain(self.iter_unknown()).collect(),
+                OptCard::Known(c) => allowed.push(*c),
+            }
+        }
+
+        let Some(first) = self.trick.get(0) else { return allowed; };
+        let follow = first.trump_suit(declaration);
+        let must_follow = allowed.iter().any(|c| c.trump_suit(declaration) == follow);
+        if must_follow {
+            allowed.retain(|c| c.trump_suit(declaration) == follow)
+        }
+        allowed
     }
 }
 
@@ -1139,6 +1171,13 @@ impl Display for DeclarationMove {
             DeclarationMove::Overbidden => write!(f, "overbidden"),
         }
     }
+}
+
+/// Suit of a card including trump cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrumpSuit {
+    Color(Suit),
+    Trump,
 }
 
 /// Returns the number of bits required to represent `count` states.

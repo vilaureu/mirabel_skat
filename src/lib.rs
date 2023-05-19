@@ -47,7 +47,10 @@ enum GameState {
     ///
     /// Stores the index of the next card to reveal.
     Revealing(usize),
-    Playing,
+    /// The actual trick-taking game is going on.
+    ///
+    /// Stores the player whose turn it is.
+    Playing(Player),
     // FIXME: Replace with fixed-size array.
     Finished(Vec<Player>),
 }
@@ -85,7 +88,7 @@ impl Display for GameState {
             GameState::Putting => write!(f, "declarer putting back cards"),
             GameState::Declaring => write!(f, "declarer is declaring"),
             GameState::Revealing(i) => write!(f, "declarer is revealing card {i} next"),
-            GameState::Playing => todo!(),
+            GameState::Playing(player) => write!(f, "it is {player}'s turn"),
             GameState::Finished(players) => {
                 if players.is_empty() {
                     write!(f, "draw")
@@ -329,8 +332,8 @@ impl GameMethods for Skat {
             GameState::SkatDecision | GameState::Putting | GameState::Declaring => {
                 self.declarer.into()
             }
-            GameState::Playing => todo!(),
-            GameState::Finished(_) => todo!(),
+            GameState::Playing(player) => player.into(),
+            GameState::Finished(_) => return Ok(()),
         });
         Ok(())
     }
@@ -413,7 +416,12 @@ impl GameMethods for Skat {
                     }
                 }
             }
-            GameState::Playing => todo!(),
+            GameState::Playing(player) => moves.extend(
+                self.cards
+                    .allowed(player, self.declaration)
+                    .into_iter()
+                    .map(Into::<MoveCode>::into),
+            ),
             GameState::Finished(_) => todo!(),
         }
 
@@ -463,11 +471,10 @@ impl GameMethods for Skat {
                 let declaration: DeclarationMove = string.parse()?;
                 Ok(declaration.into())
             }
-            GameState::Revealing(_) => {
+            GameState::Revealing(_) | GameState::Playing(_) => {
                 let card: Card = string.parse()?;
                 Ok(card.into())
             }
-            GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
     }
@@ -501,11 +508,10 @@ impl GameMethods for Skat {
                 let declaration: DeclarationMove = mov.md.try_into()?;
                 write!(str_buf, "{declaration}")
             }
-            GameState::Revealing(_) => {
+            GameState::Revealing(_) | GameState::Playing(_) => {
                 let card: Card = mov.md.try_into()?;
                 write!(str_buf, "{card}")
             }
-            GameState::Playing => todo!(),
             GameState::Finished(_) => todo!(),
         }
         .expect("writing move failed");
@@ -583,7 +589,7 @@ impl GameMethods for Skat {
                             // card.
                             GameState::Revealing(0)
                         } else {
-                            GameState::Playing
+                            GameState::Playing(Player::Forehand)
                         };
                     }
                     DeclarationMove::Overbidden => {
@@ -597,10 +603,16 @@ impl GameMethods for Skat {
                 *hand.get_mut(*i).ok_or_else(|| reveal_error(*i))? = OptCard::Known(card);
                 *i += 1;
                 if *i >= hand.len() {
-                    self.state = GameState::Playing
+                    self.state = GameState::Playing(Player::Forehand)
                 }
             }
-            GameState::Playing => todo!(),
+            GameState::Playing(player) => {
+                let card: Card = mov.md.try_into()?;
+                self.cards.take(*player, OptCard::Known(card))?;
+                self.cards.trick.push(card);
+                // TODO: Calculate trick winner.
+                // TODO: Calculate overall winner.
+            }
             GameState::Finished(_) => todo!(),
         }
 
@@ -778,7 +790,15 @@ impl GameMethods for Skat {
                     }
                 }
             }
-            GameState::Playing => todo!(),
+            GameState::Playing(player) => {
+                let card: Card = mov.md.try_into()?;
+                if !self.cards.allowed(player, self.declaration).contains(&card) {
+                    return Err(Error::new_static(
+                        ErrorCode::InvalidMove,
+                        "not allowed to play this card\0",
+                    ));
+                }
+            }
             GameState::Finished(_) => todo!(),
         }
 
