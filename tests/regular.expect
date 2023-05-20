@@ -70,4 +70,82 @@ print
 psend clubs
 print
 
+pov 1
+psend 7S
+pov 2
+psend 10S
+pov 3
+psend 9S
+print
+
+pov 2
+psend 7C
+psend 8C
+pov 3
+psend KC
+pov 1
+psend 7C
+print
+
+pov 3
+psend AD
+pov 1
+psend 10D
+pov 2
+psend 7D
+print
+
+pov 3
+psend AH
+pov 1
+psend 10H
+pov 2
+psend AC
+print
+
+psend QC
+pov 3
+psend 9C
+pov 1
+psend JH
+print
+
+psend QS
+pov 2
+psend AS
+pov 3
+psend KS
+print
+
+pov 2
+psend JD
+pov 3
+psend JC
+pov 1
+psend JS
+print
+
+pov 3
+psend 8H
+pov 1
+psend 9H
+pov 2
+psend 10C
+print
+
+psend 8D
+pov 3
+psend QD
+pov 1
+psend QH
+print
+
+pov 3
+psend KH
+pov 1
+psend 8S
+pov 2
+psend 9D
+print
+
 psend /exit

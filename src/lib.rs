@@ -50,7 +50,7 @@ enum GameState {
     /// The actual trick-taking game is going on.
     ///
     /// Stores the player whose turn it is.
-    Playing(Player),
+    Playing(PlayingState),
     // FIXME: Replace with fixed-size array.
     Finished(Vec<Player>),
 }
@@ -88,7 +88,7 @@ impl Display for GameState {
             GameState::Putting => write!(f, "declarer putting back cards"),
             GameState::Declaring => write!(f, "declarer is declaring"),
             GameState::Revealing(i) => write!(f, "declarer is revealing card {i} next"),
-            GameState::Playing(player) => write!(f, "it is {player}'s turn"),
+            GameState::Playing(state) => state.fmt(f),
             GameState::Finished(players) => {
                 if players.is_empty() {
                     write!(f, "draw")
@@ -222,6 +222,41 @@ enum BiddingResult {
     Draw,
 }
 
+#[derive(Debug, Clone)]
+struct PlayingState {
+    player: Player,
+    declarer_points: Option<u8>,
+    team_points: Option<u8>,
+}
+
+impl Display for PlayingState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "it is {}'s turn", self.player)?;
+        for (name, points) in [
+            ("declarer", self.declarer_points),
+            ("team", self.team_points),
+        ] {
+            writeln!(f)?;
+            if let Some(points) = points {
+                write!(f, "{name} has {points} points")?;
+            } else {
+                write!(f, "{name} has no tricks")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for PlayingState {
+    fn default() -> Self {
+        Self {
+            player: Player::Forehand,
+            declarer_points: Default::default(),
+            team_points: Default::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Skat {
     cards: CardStruct,
@@ -332,7 +367,7 @@ impl GameMethods for Skat {
             GameState::SkatDecision | GameState::Putting | GameState::Declaring => {
                 self.declarer.into()
             }
-            GameState::Playing(player) => player.into(),
+            GameState::Playing(ref state) => state.player.into(),
             GameState::Finished(_) => return Ok(()),
         });
         Ok(())
@@ -416,9 +451,9 @@ impl GameMethods for Skat {
                     }
                 }
             }
-            GameState::Playing(player) => moves.extend(
+            GameState::Playing(ref state) => moves.extend(
                 self.cards
-                    .allowed(player, self.declaration)
+                    .allowed(state.player, self.declaration)
                     .into_iter()
                     .map(Into::<MoveCode>::into),
             ),
@@ -589,7 +624,7 @@ impl GameMethods for Skat {
                             // card.
                             GameState::Revealing(0)
                         } else {
-                            GameState::Playing(Player::Forehand)
+                            GameState::Playing(Default::default())
                         };
                     }
                     DeclarationMove::Overbidden => {
@@ -603,14 +638,40 @@ impl GameMethods for Skat {
                 *hand.get_mut(*i).ok_or_else(|| reveal_error(*i))? = OptCard::Known(card);
                 *i += 1;
                 if *i >= hand.len() {
-                    self.state = GameState::Playing(Player::Forehand)
+                    self.state = GameState::Playing(Default::default())
                 }
             }
-            GameState::Playing(player) => {
+            GameState::Playing(state) => 'p: {
                 let card: Card = mov.md.try_into()?;
-                self.cards.take(*player, OptCard::Known(card))?;
-                self.cards.trick.push(card);
-                // TODO: Calculate trick winner.
+                self.cards.take(state.player, OptCard::Known(card))?;
+                let trick = &mut self.cards.trick;
+                trick.push(card);
+                state.player = state.player.next();
+                if trick.len() < Player::COUNT {
+                    break 'p;
+                }
+
+                let w = self.cards.winner(self.declaration);
+                let mut winner = state.player;
+                for _ in 0..w {
+                    winner = winner.next();
+                }
+                let points: u8 = self.cards.trick.iter().cloned().sum();
+                if winner == self.declarer {
+                    *state.declarer_points.get_or_insert(0) += points;
+                } else {
+                    *state.team_points.get_or_insert(0) += points;
+                }
+                self.cards.last_trick =
+                    Some(self.cards.trick.as_slice().try_into().map_err(|_| {
+                        Error::new_static(
+                            ErrorCode::InvalidState,
+                            "trick has wrong number of cards\0",
+                        )
+                    })?);
+                self.cards.trick.clear();
+                state.player = winner;
+
                 // TODO: Calculate overall winner.
             }
             GameState::Finished(_) => todo!(),
@@ -790,9 +851,13 @@ impl GameMethods for Skat {
                     }
                 }
             }
-            GameState::Playing(player) => {
+            GameState::Playing(ref state) => {
                 let card: Card = mov.md.try_into()?;
-                if !self.cards.allowed(player, self.declaration).contains(&card) {
+                if !self
+                    .cards
+                    .allowed(state.player, self.declaration)
+                    .contains(&card)
+                {
                     return Err(Error::new_static(
                         ErrorCode::InvalidMove,
                         "not allowed to play this card\0",

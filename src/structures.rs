@@ -1,6 +1,7 @@
 use std::{
     cmp::Ordering,
     fmt::{self, Display},
+    iter::Sum,
     ops::{Deref, DerefMut, Index, IndexMut},
     str::FromStr,
 };
@@ -48,6 +49,10 @@ impl Player {
             a += 1;
         }
         others
+    }
+
+    pub(crate) fn next(&self) -> Player {
+        Self::all()[(*self as usize + 1) % Self::COUNT]
     }
 }
 
@@ -266,7 +271,7 @@ impl Card {
     }
 
     /// Orders the cards with the jack of clubs being the lowest.
-    fn cmp(&self, other: &Card) -> Ordering {
+    pub(crate) fn cmp(&self, other: &Card) -> Ordering {
         let self_jack = matches!(self.0, CardValue::Jack);
         let other_jack = matches!(other.0, CardValue::Jack);
         if self_jack && other_jack {
@@ -283,7 +288,7 @@ impl Card {
     }
 
     /// Sort according to a Null game with the ace of clubs being the lowest.
-    fn cmp_null(&self, other: &Card) -> Ordering {
+    pub(crate) fn cmp_null(&self, other: &Card) -> Ordering {
         let ordering_suit = self.1.cmp(&other.1);
         if matches!(ordering_suit, Ordering::Equal) {
             self.0.cmp(&other.0)
@@ -292,12 +297,26 @@ impl Card {
         }
     }
 
-    fn trump_suit(&self, declaration: Declaration) -> TrumpSuit {
+    pub(crate) fn trump_suit(&self, declaration: Declaration) -> TrumpSuit {
         match declaration {
             Declaration::Normal(_, _) if matches!(self.0, CardValue::Jack) => TrumpSuit::Trump,
             Declaration::Normal(NormalMode::Color(suit), _) if suit == self.1 => TrumpSuit::Trump,
             _ => TrumpSuit::Color(self.1),
         }
+    }
+}
+
+impl Sum<Card> for u8 {
+    fn sum<I: Iterator<Item = Card>>(iter: I) -> Self {
+        iter.map(|card| match card.0 {
+            CardValue::Ace => 11,
+            CardValue::Num10 => 10,
+            CardValue::King => 4,
+            CardValue::Queen => 3,
+            CardValue::Jack => 2,
+            _ => 0,
+        })
+        .sum()
     }
 }
 
@@ -650,7 +669,7 @@ impl CardStruct {
     /// If any card of the player is unknown, this returns a list of their known
     /// cards and all unknown ones.
     pub(crate) fn allowed(&self, player: Player, declaration: Declaration) -> Vec<Card> {
-        let hand = self[player];
+        let hand = &self[player];
         let mut allowed = Vec::with_capacity(hand.len());
         for card in hand.iter() {
             match card {
@@ -666,6 +685,31 @@ impl CardStruct {
             allowed.retain(|c| c.trump_suit(declaration) == follow)
         }
         allowed
+    }
+
+    pub(crate) fn winner(&self, declaration: Declaration) -> usize {
+        let mut w = 0;
+        for (c, curr) in self.trick.iter().enumerate().skip(1) {
+            let winner = self.trick[w];
+            let curr_suit = curr.trump_suit(declaration);
+            let winner_suit = self.trick[w].trump_suit(declaration);
+            let better = matches!(
+                if declaration.is_null() {
+                    curr.cmp_null(&winner)
+                } else {
+                    curr.cmp(&winner)
+                },
+                Ordering::Less
+            );
+
+            if (better && curr_suit == winner_suit)
+                || (matches!(curr_suit, TrumpSuit::Trump)
+                    && !matches!(winner_suit, TrumpSuit::Trump))
+            {
+                w = c;
+            }
+        }
+        w
     }
 }
 
@@ -1175,7 +1219,7 @@ impl Display for DeclarationMove {
 
 /// Suit of a card including trump cards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrumpSuit {
+pub(crate) enum TrumpSuit {
     Color(Suit),
     Trump,
 }
