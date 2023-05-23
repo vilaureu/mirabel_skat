@@ -828,10 +828,7 @@ impl Declaration {
                 // Add 2 for possibly playing Schneider and Schwarz.
                 bid <= (u16::from(matadors[mode]) + u16::from(level) + 2) * u16::from(mode)
             }
-            Declaration::Null => bid <= 23,
-            Declaration::NullHand => bid <= 35,
-            Declaration::NullOuvert => bid <= 46,
-            Declaration::NullOuvertHand => bid <= 59,
+            _ => bid <= u16::from(*self),
         }
     }
 
@@ -883,6 +880,23 @@ impl Declaration {
     pub(crate) fn is_null(&self) -> bool {
         !matches!(self, Self::Normal(_, _))
     }
+
+    pub(crate) fn is_schwarz(&self) -> bool {
+        matches!(
+            self,
+            Self::Normal(_, GameLevel::Schwarz | GameLevel::Ouvert)
+        )
+    }
+
+    pub(crate) fn is_schneider(&self) -> bool {
+        matches!(
+            self,
+            Self::Normal(
+                _,
+                GameLevel::Schneider | GameLevel::Schwarz | GameLevel::Ouvert
+            )
+        )
+    }
 }
 
 impl From<Declaration> for move_code {
@@ -922,6 +936,19 @@ impl TryFrom<move_code> for Declaration {
                 Self::Normal(mode_value.try_into()?, level_value.try_into()?)
             }
         })
+    }
+}
+
+impl From<Declaration> for u16 {
+    /// Return the base value.
+    fn from(value: Declaration) -> Self {
+        match value {
+            Declaration::Normal(mode, _) => mode.into(),
+            Declaration::Null => 23,
+            Declaration::NullHand => 35,
+            Declaration::NullOuvert => 46,
+            Declaration::NullOuvertHand => 59,
+        }
     }
 }
 

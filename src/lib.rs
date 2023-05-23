@@ -5,6 +5,7 @@
 
 mod structures;
 
+use core::panic;
 use std::{
     fmt::{self, Display, Write},
     vec,
@@ -265,6 +266,7 @@ struct Skat {
     /// The one player playing against the rest.
     declarer: Player,
     declaration: Declaration,
+    matadors: u8,
     // mode: GameMode,
     state: GameState,
 }
@@ -272,12 +274,16 @@ struct Skat {
 impl Skat {
     const MINIMUM_BID: u16 = 18;
     const MAXIMUM_BID: u16 = 264;
+    /// Declarer is winner with at least this many points.
+    const POINTS_WINNING: u8 = 61;
+    /// Party is _Schneider_ when having these many or less points.
+    const POINTS_SCHNEIDER: u8 = 30;
 
     /// Calculate the (missing) matadors for the declarer.
     ///
     /// The Skat is only considered if the declaration is not a _Hand_ game.
     /// Returns [`Node`] if any used cards are [`OptCard::Hidden`].
-    fn matadors(&self) -> Option<Matadors> {
+    fn calculate_matadors(&self) -> Option<Matadors> {
         // FIXME: Avoid allocation.
         let mut cards = (*self.cards[self.declarer]).clone();
         if !self.declaration.is_hand() {
@@ -300,6 +306,76 @@ impl Skat {
             None
         }
     }
+
+    /// Calculates the points for the declarer's score when the game is over.
+    ///
+    /// # Panics
+    /// Panics if not in [`GameState::Playing`].
+    fn calculate_points(&self) -> i16 {
+        let GameState::Playing(ref state) = self.state else {panic!("can only determine winner is state playing")};
+
+        if self.declaration.is_null() {
+            // No need to check overbidding as it is impossible for Null games.
+            let value: i16 = u16::from(self.declaration).try_into().unwrap();
+            if state.declarer_points.is_some() {
+                return -2 * value;
+            } else {
+                return value;
+            }
+        };
+
+        let won = state.declarer_points.unwrap_or_default() >= Self::POINTS_WINNING;
+        let looser_points = if won {
+            state.team_points
+        } else {
+            state.declarer_points
+        };
+        let schneider = looser_points.unwrap_or_default() <= Self::POINTS_SCHNEIDER;
+        let schneider_announced = self.declaration.is_schneider();
+        let schwarz = looser_points.is_none();
+        let schwarz_announced = self.declaration.is_schwarz();
+
+        let multiplier: i16 = 1i16
+            + i16::from(self.declaration.is_hand())
+            + i16::from(schneider || schneider_announced)
+            + i16::from(schneider_announced)
+            + i16::from(schwarz || schwarz_announced)
+            + i16::from(schwarz_announced)
+            + i16::from(self.declaration.is_ouvert());
+        let value = i16::try_from(u16::from(self.declaration)).unwrap() * multiplier;
+        let bid = self.bid.try_into().unwrap();
+        if won
+            && (!schneider_announced || schneider)
+            && (!schwarz_announced || schwarz)
+            && value >= bid
+        {
+            value
+        } else {
+            -2 * value.max(bid)
+        }
+    }
+
+    /// Set [`Self::matadors`].
+    ///
+    /// Only does something if this is a [`Declaration::Normal`] game and the
+    /// declarer's cards and the _Skat_ are known.
+    fn set_matadors(&mut self) {
+        let Declaration::Normal(mode, _) = self.declaration else { return;
+        };
+
+        let cards: Vec<_> = self.cards[self.declarer]
+            .iter()
+            .chain(self.cards.skat.iter())
+            .collect();
+        if cards.iter().any(|c| matches!(c, OptCard::Hidden)) {
+            return;
+        }
+        let matadors = Matadors::from_cards(cards.into_iter().map(|c| match c {
+            OptCard::Hidden => unreachable!(),
+            OptCard::Known(c) => *c,
+        }));
+        self.matadors = matadors[mode];
+    }
 }
 
 impl PartialEq for Skat {
@@ -318,6 +394,7 @@ impl Default for Skat {
             // This will be overridden in the bidding phase anyway.
             declarer: Player::Forehand,
             declaration: Default::default(),
+            matadors: Default::default(),
             state: Default::default(),
         }
     }
@@ -424,7 +501,7 @@ impl GameMethods for Skat {
                 }
             }
             GameState::Declaring => {
-                let matadors = self.matadors();
+                let matadors = self.calculate_matadors();
                 moves.extend(
                     Declaration::all(self.declaration.is_hand())
                         .into_iter()
@@ -619,6 +696,7 @@ impl GameMethods for Skat {
                 match declaration {
                     DeclarationMove::Declare(declaration) => {
                         self.declaration = declaration;
+                        self.set_matadors();
                         self.state = if declaration.is_ouvert() {
                             // This assumes that the declarer has at least one
                             // card.
@@ -673,6 +751,13 @@ impl GameMethods for Skat {
                 state.player = winner;
 
                 // TODO: Calculate overall winner.
+                if (self.declaration.is_null() && state.declarer_points.is_some())
+                    || (self.declaration.is_schwarz() && state.team_points.is_some())
+                    || self.cards.hands.iter().all(|h| h.is_empty())
+                {
+                    let points = self.calculate_points();
+                    // TODO: send matador information to players
+                }
             }
             GameState::Finished(_) => todo!(),
         }
@@ -793,7 +878,7 @@ impl GameMethods for Skat {
             }
             GameState::Declaring => 'b: {
                 let declaration: DeclarationMove = mov.md.try_into()?;
-                let Some(matadors) = self.matadors() else {break 'b;};
+                let Some(matadors) = self.calculate_matadors() else {break 'b;};
 
                 match declaration {
                     DeclarationMove::Declare(declaration) => {
@@ -936,6 +1021,7 @@ impl GameMethods for Skat {
             keep[Player::from(player) as usize] = true;
         }
         self.cards.redact(keep);
+        self.matadors = 0;
         Ok(())
     }
 
@@ -957,6 +1043,9 @@ impl Display for Skat {
             writeln!(f, "{} is declarer", self.declarer)?;
         }
         if self.state.has_declaration() {
+            if self.matadors > 0 {
+                writeln!(f, "declarer does (not) have {} matadors", self.matadors)?;
+            }
             writeln!(f, "playing {}", self.declaration)?;
         } else if self.declaration.is_hand() {
             writeln!(f, "going to be a Hand game")?;
