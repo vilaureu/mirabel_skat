@@ -558,7 +558,9 @@ pub(crate) struct CardStruct {
     /// # Invariants
     /// At most [`Self::TRICK_SIZE`]`-1` cards per hand.
     pub(crate) trick: Vec<Card>,
-    pub(crate) last_trick: Option<[Card; Self::TRICK_SIZE]>,
+    /// Already played cards per player.
+    /// At most [`Self::HAND_SIZE`]`+`[`Self::SKAT_SIZE`] cards per hand.
+    pub(crate) played: [Vec<Card>; Player::COUNT],
 }
 
 impl CardStruct {
@@ -572,7 +574,7 @@ impl CardStruct {
             .flat_map(|h| h.iter_known())
             .chain(self.skat.iter_known())
             .chain(self.trick.iter().cloned())
-            .chain(self.last_trick.iter().flat_map(|t| t.iter().cloned()))
+            .chain(self.played.iter().flat_map(|t| t.iter().cloned()))
     }
 
     pub(crate) fn iter_unknown(&self) -> impl Iterator<Item = Card> + '_ {
@@ -634,7 +636,7 @@ impl CardStruct {
         let count: usize = self.hands.iter().map(|v| v.len()).sum::<usize>()
             + self.skat.len()
             + self.trick.len()
-            + self.last_trick.map(|t| t.len()).unwrap_or_default();
+            + self.played.iter().map(|t| t.len()).sum::<usize>();
         count.try_into().expect("too many cards in card structure")
     }
 
@@ -643,11 +645,13 @@ impl CardStruct {
     /// This keeps the state of players for which `keep[player_index]` is
     /// `true`.
     pub(crate) fn redact(&mut self, keep: [bool; Player::COUNT]) {
+        // TODO: Not redact single player's hand in Hand games.
         for (player, _) in keep.into_iter().enumerate().filter(|&(_, k)| !k) {
             for card in self.hands[player].iter_mut() {
                 *card = OptCard::Hidden;
             }
         }
+        // TODO: Not redact Skat if known.
         for card in self.skat.iter_mut() {
             *card = OptCard::Hidden;
         }
@@ -711,6 +715,16 @@ impl CardStruct {
         }
         w
     }
+
+    /// Move cards from [`Self::trick`] to [`Self::played`].
+    /// 
+    /// `player` must be the player of the first card in the trick.
+    pub(crate) fn put_trick(&mut self, mut player: Player) {
+        for card in self.trick.drain(0..) {
+            self.played[player as usize].push(card);
+            player = player.next();
+        }
+    }
 }
 
 impl Index<Player> for CardStruct {
@@ -730,7 +744,18 @@ impl IndexMut<Player> for CardStruct {
 impl Display for CardStruct {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for player in Player::all() {
-            write!(f, "{player}: {}", self.hands[player as usize])?;
+            write!(f, "{player}:")?;
+            let hand = &self[player];
+            if !hand.is_empty() {
+                write!(f, " {hand}")?;
+            }
+            let played = &self.played[player as usize];
+            if !played.is_empty() {
+                write!(f, " |")?;
+                for card in played {
+                    write!(f, " {card}")?;
+                }
+            }
             writeln!(f)?;
         }
 
@@ -740,14 +765,6 @@ impl Display for CardStruct {
             writeln!(f)?;
             write!(f, "current trick:")?;
             for card in &self.trick {
-                write!(f, " {card}")?;
-            }
-        }
-
-        if let Some(trick) = self.last_trick {
-            writeln!(f)?;
-            write!(f, "last trick:")?;
-            for card in trick {
                 write!(f, " {card}")?;
             }
         }
